@@ -1,0 +1,176 @@
+--- /dev/null	2026-05-27 08:26:17.000000000 +0800
++++ b/chrome/common/moci/fingerprint_config.h	2026-05-26 21:55:03.611067200 +0800
+@@ -0,0 +1,81 @@
++// Copyright 2026 安徽魔词信息科技有限公司 (Kuajing168 / MoCi)
++// SPDX-License-Identifier: MIT
++//
++// MoCi fingerprint configuration singleton.
++//
++// Loaded once per process during PreSandboxStartup from the path given by
++// the --fingerprint-config command line switch (see chrome_switches.h).
++// Subsequent fingerprint farbling patches (Canvas/Audio/WebGL/Font/TLS/...)
++// read configuration via MoCiFingerprintConfig::Get().
++//
++// JSON schema:
++//   https://github.com/mrjasonwu88-lang/moci-chromium-patches/blob/main/docs/fingerprint-config-schema.json
++//
++// Per-environment isolation: each environment in the MoCi client (kuajingke)
++// gets a unique JSON file. Browser process and all child processes (renderer,
++// utility, gpu) share the same file via command line propagation.
++//
++// Thread safety: Init() is called once during process startup. After Init,
++// Get() is read-only and thread-safe.
++
++#ifndef CHROME_COMMON_MOCI_FINGERPRINT_CONFIG_H_
++#define CHROME_COMMON_MOCI_FINGERPRINT_CONFIG_H_
++
++#include <memory>
++#include <string>
++
++#include "base/files/file_path.h"
++#include "base/values.h"
++
++namespace base {
++template <typename T> class NoDestructor;
++}  // namespace base
++
++namespace moci {
++
++class MoCiFingerprintConfig {
++ public:
++  // Returns the process-wide singleton. Always non-null. If Init() was never
++  // called or the JSON file failed to load, returns a singleton with an empty
++  // dictionary (so callers can safely call GetDict() without nullptr checks).
++  static MoCiFingerprintConfig& Get();
++
++  // Initialize from a JSON file path. Called by ChromeMainDelegate in browser
++  // process; called by child process main delegates after they parse the
++  // inherited --fingerprint-config switch. Idempotent: subsequent calls log a
++  // warning and become no-ops.
++  static void Init(const base::FilePath& json_path);
++
++  // Returns the root JSON object as a Dict. Empty Dict if Init() was never
++  // called or the file failed to parse. Never returns nullptr-equivalent.
++  // Callers may safely chain .FindDict("canvas")->FindInt("noiseSeed") etc.
++  const base::DictValue& GetDict() const { return root_; }
++
++  // True if Init() loaded a valid JSON file. False if no --fingerprint-config
++  // was passed, the file was missing, or JSON parse failed. Callers that need
++  // to skip farbling when no config is provided should check this first.
++  bool is_loaded() const { return loaded_; }
++
++  // Log the current load status to stderr. Should be called AFTER InitLogging()
++  // because Init() runs in PreSandboxStartup before the logger is wired up on
++  // Windows — any LOG() emitted during Init() is silently dropped. Call this
++  // from ChromeMainDelegate::SandboxInitialized to surface load state in logs.
++  void LogStatus() const;
++
++  MoCiFingerprintConfig(const MoCiFingerprintConfig&) = delete;
++  MoCiFingerprintConfig& operator=(const MoCiFingerprintConfig&) = delete;
++
++ private:
++  friend class base::NoDestructor<MoCiFingerprintConfig>;
++
++  MoCiFingerprintConfig();
++  ~MoCiFingerprintConfig() = default;
++
++  base::DictValue root_;
++  bool loaded_ = false;
++  bool init_called_ = false;
++};
++
++}  // namespace moci
++
++#endif  // CHROME_COMMON_MOCI_FINGERPRINT_CONFIG_H_
+--- /dev/null	2026-05-27 08:26:17.000000000 +0800
++++ b/chrome/common/moci/fingerprint_config.cc	2026-05-26 21:55:07.085664400 +0800
+@@ -0,0 +1,89 @@
++// Copyright 2026 安徽魔词信息科技有限公司 (Kuajing168 / MoCi)
++// SPDX-License-Identifier: MIT
++
++#include "chrome/common/moci/fingerprint_config.h"
++
++#include <utility>
++
++#include "base/check.h"
++#include "base/files/file_util.h"
++#include "base/json/json_reader.h"
++#include "base/logging.h"
++#include "base/no_destructor.h"
++
++namespace moci {
++
++namespace {
++
++// Soft cap on JSON file size. The schema is ~166 fields total. A typical
++// serialized config is 8-20 KB. 1 MB is generous; reject anything larger as
++// probably malformed / malicious.
++constexpr size_t kMaxConfigBytes = 1024 * 1024;
++
++}  // namespace
++
++// static
++MoCiFingerprintConfig& MoCiFingerprintConfig::Get() {
++  static base::NoDestructor<MoCiFingerprintConfig> instance;
++  return *instance;
++}
++
++// static
++void MoCiFingerprintConfig::Init(const base::FilePath& json_path) {
++  MoCiFingerprintConfig& self = Get();
++  if (self.init_called_) {
++    LOG(WARNING) << "[MoCi] MoCiFingerprintConfig::Init called twice; "
++                    "ignoring second call. Path=" << json_path.value();
++    return;
++  }
++  self.init_called_ = true;
++
++  if (json_path.empty()) {
++    LOG(INFO) << "[MoCi] no --fingerprint-config provided; farbling disabled";
++    return;
++  }
++
++  std::string contents;
++  if (!base::ReadFileToStringWithMaxSize(json_path, &contents,
++                                         kMaxConfigBytes)) {
++    LOG(ERROR) << "[MoCi] failed to read fingerprint-config from "
++               << json_path.value() << " (missing or >1MB)";
++    return;
++  }
++
++  auto parsed = base::JSONReader::ReadAndReturnValueWithError(
++      contents, base::JSON_PARSE_RFC);
++  if (!parsed.has_value()) {
++    LOG(ERROR) << "[MoCi] JSON parse error in fingerprint-config: "
++               << parsed.error().message << " (line " << parsed.error().line
++               << ", col " << parsed.error().column << ")";
++    return;
++  }
++
++  if (!parsed->is_dict()) {
++    LOG(ERROR) << "[MoCi] fingerprint-config root must be an object, got "
++               << parsed->type();
++    return;
++  }
++
++  self.root_ = std::move(*parsed).TakeDict();
++  self.loaded_ = true;
++  LOG(INFO) << "[MoCi] loaded fingerprint-config from " << json_path.value()
++          << " (" << self.root_.size() << " top-level keys)";
++}
++
++void MoCiFingerprintConfig::LogStatus() const {
++  if (loaded_) {
++    LOG(INFO) << "[MoCi] fingerprint-config active; " << root_.size()
++              << " top-level keys";
++  } else if (init_called_) {
++    LOG(INFO) << "[MoCi] fingerprint-config not loaded (no switch / missing "
++                 "file / parse error); farbling disabled";
++  } else {
++    LOG(WARNING) << "[MoCi] LogStatus called before Init";
++  }
++}
++
++MoCiFingerprintConfig::MoCiFingerprintConfig() = default;
++
++}  // namespace moci

@@ -1,0 +1,846 @@
+diff --git a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
+index 7bd7cb5906..c9e99f2ef6 100644
+--- a/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
++++ b/third_party/blink/renderer/platform/graphics/static_bitmap_image.cc
+@@ -4,18 +4,26 @@
+ 
+ #include "third_party/blink/renderer/platform/graphics/static_bitmap_image.h"
+ 
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/rand_util.h"
++#include "base/logging.h"
+ #include "base/numerics/checked_math.h"
++
++#include <functional>
+ #include "gpu/command_buffer/client/gles2_interface.h"
+ #include "third_party/blink/renderer/platform/graphics/accelerated_static_bitmap_image.h"
+ #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
+ #include "third_party/blink/renderer/platform/graphics/image_observer.h"
+ #include "third_party/blink/renderer/platform/graphics/paint/paint_image.h"
+ #include "third_party/blink/renderer/platform/graphics/unaccelerated_static_bitmap_image.h"
++#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
+ #include "third_party/blink/renderer/platform/transforms/affine_transform.h"
+ #include "third_party/skia/include/core/SkCanvas.h"
+ #include "third_party/skia/include/core/SkImage.h"
+ #include "third_party/skia/include/core/SkPaint.h"
+ #include "third_party/skia/include/core/SkSurface.h"
++#include "third_party/skia/src/core/SkColorData.h"
+ #include "ui/gfx/geometry/skia_conversions.h"
+ #include "v8/include/v8.h"
+ 
+@@ -114,4 +122,204 @@ void StaticBitmapImage::DrawHelper(cc::PaintCanvas* canvas,
+                         ToSkiaRectConstraint(draw_options.clamping_mode));
+ }
+ 
++// set the component to maximum-delta if it is >= maximum, or add to existing color component (color + delta)
++#define shuffleComponent(color, max, delta) ( (color) >= (max) ? ((max)-(delta)) : ((color)+(delta)) )
++
++#define writable_addr(T, p, stride, x, y) (T*)((const char *)p + y * stride + x * sizeof(T))
++
++namespace {
++
++// MoCi: deterministic PRNG seeded from --fingerprint-config path hash.
++// Same seed -> identical noise sequence -> same canvas hash for the same
++// content within one environment, but different across environments.
++// Without --fingerprint-config we keep upstream BRM behavior (random per call)
++// by returning 0 from MoCiCanvasSeed, in which case callers fall back to
++// base::Rand* helpers below.
++uint64_t MoCiCanvasSeed() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) {
++    return 0;
++  }
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) {
++    return 0;
++  }
++  // std::hash of the path is enough; we just need a stable per-env value.
++  return static_cast<uint64_t>(
++      std::hash<base::FilePath::StringType>{}(p.value()));
++}
++
++class XorShift64 {
++ public:
++  explicit XorShift64(uint64_t seed) : state_(seed ? seed : 0x9E3779B97F4A7C15ULL) {}
++  uint64_t Next() {
++    state_ ^= state_ << 13;
++    state_ ^= state_ >> 7;
++    state_ ^= state_ << 17;
++    return state_;
++  }
++  double NextDouble() { return (Next() >> 11) * (1.0 / (1ULL << 53)); }
++  int NextIntInclusive(int lo, int hi) { return lo + static_cast<int>(Next() % static_cast<uint64_t>(hi - lo + 1)); }
++ private:
++  uint64_t state_;
++};
++
++}  // namespace
++
++void StaticBitmapImage::ShuffleSubchannelColorData(const void *addr, const SkImageInfo& info, int srcX, int srcY) {
++  auto w = info.width() - srcX, h = info.height() - srcY;
++
++  // skip tiny images; info.width()/height() can also be 0
++  if ((w < 8) || (h < 8)) {
++    return;
++  }
++
++  // MoCi: when --fingerprint-config is set, derive deterministic random values
++  // from the config path hash + image geometry so the same canvas content
++  // hashes the same within one environment.
++  uint64_t moci_seed = MoCiCanvasSeed();
++  XorShift64 moci_prng(moci_seed ^ (static_cast<uint64_t>(w) << 32) ^
++                       (static_cast<uint64_t>(h) << 16) ^
++                       static_cast<uint64_t>(srcX) ^
++                       (static_cast<uint64_t>(srcY) << 8));
++  const bool moci_active = (moci_seed != 0);
++
++  // generate the first random number here
++  double shuffleX = moci_active ? moci_prng.NextDouble() : base::RandDouble();
++
++  // cap maximum pixels to change
++  auto pixels = (w + h) / 128;
++  if (pixels > 10) {
++    pixels = 10;
++  } else if (pixels < 2) {
++    pixels = 2;
++  }
++
++  auto colorType = info.colorType();
++  auto fRowBytes = info.minRowBytes(); // stride
++
++  DLOG(INFO) << "BRM: ShuffleSubchannelColorData() w=" << w << " h=" << h << " colorType=" << colorType << " fRowBytes=" << fRowBytes;
++
++  // second random number (for y/height)
++  double shuffleY = moci_active ? moci_prng.NextDouble() : base::RandDouble();
++
++  // calculate random coordinates using bisection
++  auto currentW = w, currentH = h;
++  for(;pixels >= 0; pixels--) {
++    int x = currentW * shuffleX, y = currentH * shuffleY;
++
++    // calculate randomisation amounts for each RGB component
++    uint8_t shuffleR = moci_active ? static_cast<uint8_t>(moci_prng.NextIntInclusive(0, 4))
++                                   : static_cast<uint8_t>(base::RandInt(0, 4));
++    uint8_t shuffleG = (shuffleR + x) % 4;
++    uint8_t shuffleB = (shuffleG + y) % 4;
++
++    // manipulate pixel data to slightly change the R, G, B components
++    switch (colorType) {
++      case kAlpha_8_SkColorType:
++      {
++         auto *pixel = writable_addr(uint8_t, addr, fRowBytes, x, y);
++         auto r = SkColorGetR(*pixel), g = SkColorGetG(*pixel), b = SkColorGetB(*pixel), a = SkColorGetA(*pixel);
++
++         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
++         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
++         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
++         // alpha is left unchanged
++
++         *pixel = SkColorSetARGB(a, r, g, b);
++      }
++      break;
++      case kGray_8_SkColorType:
++      {
++         auto *pixel = writable_addr(uint8_t, addr, fRowBytes, x, y);
++         *pixel = shuffleComponent(*pixel, UINT8_MAX-1, shuffleB);
++      }
++      break;
++      case kRGB_565_SkColorType:
++      {
++         auto *pixel = writable_addr(uint16_t, addr, fRowBytes, x, y);
++         unsigned    r = SkPacked16ToR32(*pixel);
++         unsigned    g = SkPacked16ToG32(*pixel);
++         unsigned    b = SkPacked16ToB32(*pixel);
++
++         r = shuffleComponent(r, 31, shuffleR);
++         g = shuffleComponent(g, 63, shuffleG);
++         b = shuffleComponent(b, 31, shuffleB);
++
++         unsigned r16 = (r & SK_R16_MASK) << SK_R16_SHIFT;
++         unsigned g16 = (g & SK_G16_MASK) << SK_G16_SHIFT;
++         unsigned b16 = (b & SK_B16_MASK) << SK_B16_SHIFT;
++
++         *pixel = r16 | g16 | b16;
++      }
++      break;
++      case kARGB_4444_SkColorType:
++      {
++         auto *pixel = writable_addr(uint16_t, addr, fRowBytes, x, y);
++         auto a = SkGetPackedA4444(*pixel), r = SkGetPackedR4444(*pixel), g = SkGetPackedG4444(*pixel), b = SkGetPackedB4444(*pixel);
++
++         r = shuffleComponent(r, 15, shuffleR);
++         g = shuffleComponent(g, 15, shuffleG);
++         b = shuffleComponent(b, 15, shuffleB);
++         // alpha is left unchanged
++
++         unsigned a4 = (a & 0xF) << SK_A4444_SHIFT;
++         unsigned r4 = (r & 0xF) << SK_R4444_SHIFT;
++         unsigned g4 = (g & 0xF) << SK_G4444_SHIFT;
++         unsigned b4 = (b & 0xF) << SK_B4444_SHIFT;
++
++         *pixel = r4 | b4 | g4 | a4;
++      }
++      break;
++      case kRGBA_8888_SkColorType:
++      {
++         auto *pixel = writable_addr(uint32_t, addr, fRowBytes, x, y);
++         auto a = SkGetPackedA32(*pixel), r = SkGetPackedR32(*pixel), g = SkGetPackedG32(*pixel), b = SkGetPackedB32(*pixel);
++
++         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
++         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
++         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
++         // alpha is left unchanged
++
++         *pixel = (a << SK_A32_SHIFT) | (r << SK_R32_SHIFT) |
++                  (g << SK_G32_SHIFT) | (b << SK_B32_SHIFT);
++      }
++      break;
++      case kBGRA_8888_SkColorType:
++      {
++         auto *pixel = writable_addr(uint32_t, addr, fRowBytes, x, y);
++         auto a = SkGetPackedA32(*pixel), b = SkGetPackedR32(*pixel), g = SkGetPackedG32(*pixel), r = SkGetPackedB32(*pixel);
++
++         r = shuffleComponent(r, UINT8_MAX-1, shuffleR);
++         g = shuffleComponent(g, UINT8_MAX-1, shuffleG);
++         b = shuffleComponent(b, UINT8_MAX-1, shuffleB);
++         // alpha is left unchanged
++
++         *pixel = (a << SK_BGRA_A32_SHIFT) | (r << SK_BGRA_R32_SHIFT) |
++                  (g << SK_BGRA_G32_SHIFT) | (b << SK_BGRA_B32_SHIFT);
++      }
++      break;
++      default:
++         // the remaining formats are not expected to be used in Chromium
++         LOG(WARNING) << "BRM: ShuffleSubchannelColorData(): Ignoring pixel format";
++         return;
++    }
++
++    // keep bisecting or reset current width/height as needed
++    if (x == 0) {
++       currentW = w;
++    } else {
++       currentW = x;
++    }
++    if (y == 0) {
++       currentH = h;
++    } else {
++       currentH = y;
++    }
++  }
++}
++
++#undef writable_addr
++#undef shuffleComponent
++
+ }  // namespace blink
+diff --git a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
+index 626582e39b..a6475e519f 100644
+--- a/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
++++ b/third_party/blink/renderer/modules/webaudio/offline_audio_context.cc
+@@ -25,6 +25,10 @@
+ 
+ #include "third_party/blink/renderer/modules/webaudio/offline_audio_context.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "media/base/audio_glitch_info.h"
+@@ -398,6 +402,67 @@ ScriptPromise<IDLUndefined> OfflineAudioContext::resumeContext(
+   return ToResolvedUndefinedPromise(script_state);
+ }
+ 
++namespace {
++
++// MoCi: deterministic audio noise — same per-env seed yields identical
++// perturbation pattern so audio fingerprint (fingerprintjs OfflineAudioContext
++// + DynamicsCompressor) stays stable within one environment but differs
++// across environments. Mirrors fp-03 Canvas approach.
++uint64_t MoCiAudioSeed() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) {
++    return 0;
++  }
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) {
++    return 0;
++  }
++  return static_cast<uint64_t>(
++      std::hash<base::FilePath::StringType>{}(p.value()));
++}
++
++class XorShift64 {
++ public:
++  explicit XorShift64(uint64_t seed) : state_(seed ? seed : 0xA5A5A5A55A5A5A5AULL) {}
++  uint64_t Next() {
++    state_ ^= state_ << 13;
++    state_ ^= state_ >> 7;
++    state_ ^= state_ << 17;
++    return state_;
++  }
++  // Returns small signed delta in [-1.0, 1.0] for amplitude perturbation.
++  double NextSignedDouble() {
++    return ((static_cast<double>(Next() >> 11) * (1.0 / (1ULL << 53))) - 0.5) * 2.0;
++  }
++ private:
++  uint64_t state_;
++};
++
++void PerturbAudioBuffer(AudioBuffer* buffer) {
++  uint64_t seed = MoCiAudioSeed();
++  if (seed == 0 || !buffer) {
++    return;
++  }
++  // Amplitude of perturbation: 1e-7 — well below auditory threshold (~1e-3)
++  // and below 16-bit PCM quantisation (~3e-5), but enough to flip Float32 LSBs
++  // so SHA-style hashes of the channel data diverge across environments.
++  constexpr float kAmplitude = 1e-7f;
++  for (unsigned ch = 0; ch < buffer->numberOfChannels(); ++ch) {
++    NotShared<DOMFloat32Array> data = buffer->getChannelData(ch);
++    if (!data.Get()) continue;
++    XorShift64 prng(seed ^ (static_cast<uint64_t>(ch) << 32) ^
++                    static_cast<uint64_t>(buffer->length()));
++    base::span<float> span = data->AsSpan();
++    // Perturb every 100th sample — sparse enough to keep audible quality
++    // identical, dense enough that any non-trivial hash window catches it.
++    for (size_t i = 0; i < span.size(); i += 100) {
++      span[i] += static_cast<float>(prng.NextSignedDouble()) * kAmplitude;
++    }
++  }
++}
++
++}  // namespace
++
+ void OfflineAudioContext::FireCompletionEvent() {
+   DCHECK(IsMainThread());
+ 
+@@ -419,6 +484,10 @@ void OfflineAudioContext::FireCompletionEvent() {
+       return;
+     }
+ 
++    // MoCi fp-04: inject deterministic per-env noise into the rendered buffer
++    // before it's exposed to JavaScript via OfflineAudioCompletionEvent.
++    PerturbAudioBuffer(rendered_buffer);
++
+     // Call the offline rendering completion event listener and resolve the
+     // promise too.
+     DispatchEvent(*OfflineAudioCompletionEvent::Create(rendered_buffer));
+diff --git a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+index e3f40494b3..c21b061266 100644
+--- a/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
++++ b/third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.cc
+@@ -25,13 +25,16 @@
+ 
+ #include "third_party/blink/renderer/modules/webgl/webgl_rendering_context_base.h"
+ 
++#include <functional>
+ #include <memory>
+ #include <utility>
+ 
+ #include "base/bit_cast.h"
+ #include "base/byte_size.h"
++#include "base/command_line.h"
+ #include "base/compiler_specific.h"
+ #include "base/feature_list.h"
++#include "base/files/file_path.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/metrics/histogram_macros.h"
+@@ -3997,6 +4000,27 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedRendererWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // MoCi fp-05: per-env spoof from --fingerprint-config path hash
++        if (auto* cmd = base::CommandLine::ForCurrentProcess();
++            cmd && cmd->HasSwitch("fingerprint-config")) {
++          auto p = cmd->GetSwitchValuePath("fingerprint-config");
++          if (!p.empty()) {
++            static const char* const kRenderers[] = {
++              "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (Intel, Intel(R) UHD Graphics 630 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (AMD, AMD Radeon(TM) Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++              "ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
++            };
++            auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++            return WebGLAny(script_state, String(kRenderers[seed % std::size(kRenderers)]));
++          }
++        }
++        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
++          return WebGLAny(script_state, String(blink::features::kSpoofWebGLRendererParam.Get()));
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_RENDERER)));
+       }
+@@ -4006,6 +4030,27 @@ ScriptValue WebGLRenderingContextBase::getParameter(ScriptState* script_state,
+       return ScriptValue::CreateNull(script_state->GetIsolate());
+     case WebGLDebugRendererInfo::kUnmaskedVendorWebgl:
+       if (ExtensionEnabled(kWebGLDebugRendererInfoName)) {
++        // MoCi fp-05: vendor follows renderer choice
++        if (auto* cmd = base::CommandLine::ForCurrentProcess();
++            cmd && cmd->HasSwitch("fingerprint-config")) {
++          auto p = cmd->GetSwitchValuePath("fingerprint-config");
++          if (!p.empty()) {
++            static const char* const kVendors[] = {
++              "Google Inc. (NVIDIA)",
++              "Google Inc. (NVIDIA)",
++              "Google Inc. (Intel)",
++              "Google Inc. (Intel)",
++              "Google Inc. (AMD)",
++              "Google Inc. (AMD)",
++              "Google Inc. (NVIDIA)",
++              "Google Inc. (NVIDIA)",
++            };
++            auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++            return WebGLAny(script_state, String(kVendors[seed % std::size(kVendors)]));
++          }
++        }
++        if (base::FeatureList::IsEnabled(blink::features::kSpoofWebGLInfo))
++          return WebGLAny(script_state, String(blink::features::kSpoofWebGLVendorParam.Get()));
+         return WebGLAny(script_state,
+                         String(ContextGL()->GetString(GL_VENDOR)));
+       }
+diff --git a/third_party/blink/renderer/platform/runtime_enabled_features.json5 b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+index e35efdeaa0..46ef59b5c6 100644
+--- a/third_party/blink/renderer/platform/runtime_enabled_features.json5
++++ b/third_party/blink/renderer/platform/runtime_enabled_features.json5
+@@ -2813,6 +2813,18 @@
+       name: "FixVisualRectRemoteViewportTransform",
+       status: "stable",
+     },
++    {
++      name: "FingerprintingClientRectsNoise",
++      status: "stable",
++    },
++    {
++      name: "FingerprintingCanvasMeasureTextNoise",
++      status: "stable",
++    },
++    {
++      name: "FingerprintingCanvasImageDataNoise",
++      status: "stable",
++    },
+     {
+       name: "Fledge",
+       status: "stable",
+diff --git a/third_party/blink/renderer/core/dom/document.cc b/third_party/blink/renderer/core/dom/document.cc
+index 9fea619a16..79a4a1973d 100644
+--- a/third_party/blink/renderer/core/dom/document.cc
++++ b/third_party/blink/renderer/core/dom/document.cc
+@@ -34,12 +34,17 @@
+ #include <optional>
+ #include <utility>
+ 
++#include <functional>
++
+ #include "base/auto_reset.h"
++#include "base/command_line.h"
+ #include "base/containers/adapters.h"
+ #include "base/debug/dump_without_crashing.h"
++#include "base/files/file_path.h"
+ #include "base/i18n/time_formatting.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/notreached.h"
++#include "base/rand_util.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
+@@ -1046,6 +1051,32 @@ Document::Document(const DocumentInit& initializer,
+       data_(MakeGarbageCollected<DocumentData>(GetExecutionContext())) {
+   TRACE_EVENT("blink", "Document::Document", perfetto::Flow::FromPointer(this));
+   DCHECK(agent_);
++  if (RuntimeEnabledFeatures::FingerprintingClientRectsNoiseEnabled()) {
++    // MoCi fp-10: deterministic per-env noise from --fingerprint-config path
++    // so getClientRects() returns same scale within one environment.
++    uint64_t moci_seed = 0;
++    if (auto* cmd = base::CommandLine::ForCurrentProcess();
++        cmd && cmd->HasSwitch("fingerprint-config")) {
++      auto p = cmd->GetSwitchValuePath("fingerprint-config");
++      if (!p.empty()) {
++        moci_seed = static_cast<uint64_t>(
++            std::hash<base::FilePath::StringType>{}(p.value()));
++      }
++    }
++    if (moci_seed != 0) {
++      uint64_t s = moci_seed;
++      s ^= s << 13; s ^= s >> 7; s ^= s << 17;
++      double r1 = (s >> 11) * (1.0 / (1ULL << 53));
++      s ^= s << 13; s ^= s >> 7; s ^= s << 17;
++      double r2 = (s >> 11) * (1.0 / (1ULL << 53));
++      noise_factor_x_ = 1 + (r1 - 0.5) * 0.000003;
++      noise_factor_y_ = 1 + (r2 - 0.5) * 0.000003;
++    } else {
++      // Precompute -0.0003% to 0.0003% noise factor for get*ClientRect*() fingerprinting
++      noise_factor_x_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
++      noise_factor_y_ = 1 + (base::RandDouble() - 0.5) * 0.000003;
++    }
++  }
+   if (base::FeatureList::IsEnabled(features::kDelayAsyncScriptExecution) &&
+       features::kDelayAsyncScriptExecutionDelayByDefaultParam.Get()) {
+     script_runner_delayer_->Activate();
+@@ -1179,6 +1210,14 @@ const Position Document::PositionAdjustedToTreeScope(
+   return Position::BeforeNode(*shadow_host);
+ }
+ 
++double Document::GetNoiseFactorX() {
++  return noise_factor_x_;
++}
++
++double Document::GetNoiseFactorY() {
++  return noise_factor_y_;
++}
++
+ SelectorQueryCache& Document::GetSelectorQueryCache() {
+   if (!selector_query_cache_)
+     selector_query_cache_ = MakeGarbageCollected<SelectorQueryCache>();
+diff --git a/third_party/blink/renderer/core/frame/screen.cc b/third_party/blink/renderer/core/frame/screen.cc
+index 69ffc2b05f..201c098e4c 100644
+--- a/third_party/blink/renderer/core/frame/screen.cc
++++ b/third_party/blink/renderer/core/frame/screen.cc
+@@ -28,6 +28,10 @@
+ 
+ #include "third_party/blink/renderer/core/frame/screen.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "base/numerics/safe_conversions.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+ #include "third_party/blink/renderer/core/event_target_names.h"
+@@ -78,13 +82,36 @@ bool Screen::AreWebExposedScreenPropertiesEqual(
+   return true;
+ }
+ 
++namespace {
++
++// MoCi fp-15: pick from a small pool of common 16:9/16:10 desktop resolutions
++// by --fingerprint-config path hash. Same env -> same screen size; different
++// envs -> different sizes (multi-account isolation).
++struct ScreenSize { int w; int h; };
++constexpr ScreenSize kMoCiScreenPool[] = {
++  {1920, 1080}, {2560, 1440}, {1366, 768}, {1536, 864},
++  {1680, 1050}, {1440, 900},  {1600, 900}, {3840, 2160},
++};
++const ScreenSize* MoCiScreen() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) return nullptr;
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) return nullptr;
++  auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++  return &kMoCiScreenPool[seed % std::size(kMoCiScreenPool)];
++}
++
++}  // namespace
++
+ int Screen::height() const {
++  if (auto* s = MoCiScreen()) return s->h;
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/false).height();
+ }
+ 
+ int Screen::width() const {
++  if (auto* s = MoCiScreen()) return s->w;
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/false).width();
+@@ -122,12 +149,14 @@ int Screen::availTop() const {
+ }
+ 
+ int Screen::availHeight() const {
++  if (auto* s = MoCiScreen()) return s->h - 40;  // minus taskbar
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).height();
+ }
+ 
+ int Screen::availWidth() const {
++  if (auto* s = MoCiScreen()) return s->w;
+   if (!DomWindow())
+     return 0;
+   return GetRect(/*available=*/true).width();
+diff --git a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+index f5c0db2d1b..5bb85d5b31 100644
+--- a/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
++++ b/third_party/blink/renderer/core/frame/navigator_concurrent_hardware.cc
+@@ -4,11 +4,26 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_concurrent_hardware.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "base/system/sys_info.h"
+ 
+ namespace blink {
+ 
+ unsigned NavigatorConcurrentHardware::hardwareConcurrency() const {
++  // MoCi fp-26: spoof to common values (4/6/8/12/16) by per-env hash so
++  // multi-account doesn't reveal "all same machine has 32 logical cores".
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    auto p = cmd->GetSwitchValuePath("fingerprint-config");
++    if (!p.empty()) {
++      static const unsigned kPool[] = {4, 4, 6, 8, 8, 12, 16, 8};
++      auto s = std::hash<base::FilePath::StringType>{}(p.value());
++      return kPool[s % std::size(kPool)];
++    }
++  }
+   return static_cast<unsigned>(base::SysInfo::NumberOfProcessors());
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/navigator_device_memory.cc b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+index 05fa33e456..4f567a9e8e 100644
+--- a/third_party/blink/renderer/core/frame/navigator_device_memory.cc
++++ b/third_party/blink/renderer/core/frame/navigator_device_memory.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "third_party/blink/renderer/core/frame/navigator_device_memory.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "third_party/blink/public/common/device_memory/approximated_device_memory.h"
+ #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom-shared.h"
+ #include "third_party/blink/renderer/core/dom/document.h"
+@@ -12,6 +16,18 @@
+ namespace blink {
+ 
+ float NavigatorDeviceMemory::deviceMemory() const {
++  // MoCi fp-26b: spoof deviceMemory to spec-allowed values (0.25/0.5/1/2/4/8)
++  // per-env hash. Real value 32GB outs the user as power-machine, signal to
++  // hide for multi-account stealth.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    auto p = cmd->GetSwitchValuePath("fingerprint-config");
++    if (!p.empty()) {
++      static const float kPool[] = {4.0f, 8.0f, 4.0f, 8.0f, 2.0f, 8.0f, 4.0f, 8.0f};
++      auto s = std::hash<base::FilePath::StringType>{}(p.value());
++      return kPool[s % std::size(kPool)];
++    }
++  }
+   return ApproximatedDeviceMemory::GetApproximatedDeviceMemory();
+ }
+ 
+diff --git a/third_party/blink/renderer/core/frame/history.cc b/third_party/blink/renderer/core/frame/history.cc
+index 5de17d4107..ea1c35f38d 100644
+--- a/third_party/blink/renderer/core/frame/history.cc
++++ b/third_party/blink/renderer/core/frame/history.cc
+@@ -104,7 +104,11 @@ unsigned History::length(ExceptionState& exception_state) const {
+     return 0;
+   }
+ 
+-  return DomWindow()->GetFrame()->Client()->BackForwardLength();
++  // MoCi fp-28: clamp history.length to the actual frame back/forward count
++  // BUT capped at 2 — a real opened-fresh-tab is 1, after one nav is 2; higher
++  // values leak browsing depth across sessions and is a fingerprint vector.
++  unsigned len = DomWindow()->GetFrame()->Client()->BackForwardLength();
++  return std::min<unsigned>(len, 2u);
+ }
+ 
+ ScriptValue History::state(ScriptState* script_state,
+diff --git a/third_party/blink/renderer/core/frame/local_dom_window.cc b/third_party/blink/renderer/core/frame/local_dom_window.cc
+index 51f03729c2..24014a422a 100644
+--- a/third_party/blink/renderer/core/frame/local_dom_window.cc
++++ b/third_party/blink/renderer/core/frame/local_dom_window.cc
+@@ -31,6 +31,8 @@
+ #include <utility>
+ 
+ #include "base/command_line.h"
++#include "base/files/file_path.h"
++#include <functional>
+ #include "base/metrics/histogram_macros.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_id_helper.h"
+@@ -1570,7 +1572,31 @@ bool LocalDOMWindow::offscreenBuffering() const {
+   return true;
+ }
+ 
++namespace {
++
++// MoCi fp-27: per-env spoof of window.outerWidth/outerHeight so it matches
++// fp-15 Screen size pool (8 common desktop resolutions). Inner dimensions are
++// page viewport which layout needs to be real; only outer is the browser
++// window itself, safe to spoof and prevents fingerprinters from cross-checking
++// `outerWidth == screen.width` inconsistency.
++struct MoCiOuter { int w; int h; };
++const MoCiOuter* MoCiOuterSize() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) return nullptr;
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) return nullptr;
++  static constexpr MoCiOuter kPool[] = {
++    {1920, 1080}, {2560, 1440}, {1366, 768}, {1536, 864},
++    {1680, 1050}, {1440, 900},  {1600, 900}, {3840, 2160},
++  };
++  auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++  return &kPool[seed % std::size(kPool)];
++}
++
++}  // namespace
++
+ int LocalDOMWindow::outerHeight() const {
++  if (auto* s = MoCiOuterSize()) return s->h;
+   if (!GetFrame())
+     return 0;
+ 
+@@ -1596,6 +1622,7 @@ int LocalDOMWindow::outerHeight() const {
+ }
+ 
+ int LocalDOMWindow::outerWidth() const {
++  if (auto* s = MoCiOuterSize()) return s->w;
+   if (!GetFrame())
+     return 0;
+ 
+diff --git a/third_party/blink/renderer/core/css/media_query_evaluator.cc b/third_party/blink/renderer/core/css/media_query_evaluator.cc
+index 844c86fd08..ae26e101e8 100644
+--- a/third_party/blink/renderer/core/css/media_query_evaluator.cc
++++ b/third_party/blink/renderer/core/css/media_query_evaluator.cc
+@@ -29,8 +29,20 @@
+ 
+ #include "third_party/blink/renderer/core/css/media_query_evaluator.h"
+ 
++#include "base/command_line.h"
+ #include "base/functional/function_ref.h"
+ #include "base/notreached.h"
++
++namespace {
++// MoCi fp-23: when --fingerprint-config is set, normalize CSS user-preference
++// media queries to "default desktop" values so the user's OS accessibility
++// settings (reduced motion / contrast / forced colors / color gamut) don't
++// leak as fingerprint signals.
++bool MoCiNormalizeMediaQueries() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  return cmd && cmd->HasSwitch("fingerprint-config");
++}
++}  // namespace
+ #include "third_party/blink/public/common/css/forced_colors.h"
+ #include "third_party/blink/public/common/css/navigation_controls.h"
+ #include "third_party/blink/public/common/css/scripting.h"
+@@ -1009,18 +1021,20 @@ static bool PrefersReducedMotionMediaFeatureEval(
+   UseCounter::Count(media_values.GetDocument(),
+                     WebFeature::kPrefersReducedMotionMediaFeature);
+ 
++  // MoCi fp-23: force no-preference (default).
++  bool reduced = MoCiNormalizeMediaQueries() ? false : media_values.PrefersReducedMotion();
++
+   // If the value is not valid, this was passed without an argument. In that
+   // case, it implicitly resolves to 'reduce'.
+   if (!value.IsValid()) {
+-    return media_values.PrefersReducedMotion();
++    return reduced;
+   }
+ 
+   if (!value.IsId()) {
+     return false;
+   }
+ 
+-  return (value.Id() == CSSValueID::kNoPreference) ^
+-         media_values.PrefersReducedMotion();
++  return (value.Id() == CSSValueID::kNoPreference) ^ reduced;
+ }
+ 
+ static bool PrefersReducedDataMediaFeatureEval(
+@@ -1182,7 +1196,11 @@ static bool PrefersContrastMediaFeatureEval(const MediaQueryExpValue& value,
+   UseCounter::Count(media_values.GetDocument(),
+                     WebFeature::kPrefersContrastMediaFeature);
+ 
+-  auto preferred_contrast = media_values.GetPreferredContrast();
++  // MoCi fp-23: force no-preference (default).
++  auto preferred_contrast =
++      MoCiNormalizeMediaQueries()
++          ? mojom::blink::PreferredContrast::kNoPreference
++          : media_values.GetPreferredContrast();
+ 
+   if (!value.IsValid()) {
+     return preferred_contrast != mojom::blink::PreferredContrast::kNoPreference;
+@@ -1213,7 +1231,10 @@ static bool ForcedColorsMediaFeatureEval(const MediaQueryExpValue& value,
+   UseCounter::Count(media_values.GetDocument(),
+                     WebFeature::kForcedColorsMediaFeature);
+ 
+-  ForcedColors forced_colors = media_values.GetForcedColors();
++  // MoCi fp-23: force none (default).
++  ForcedColors forced_colors = MoCiNormalizeMediaQueries()
++                                   ? ForcedColors::kNone
++                                   : media_values.GetForcedColors();
+ 
+   if (!value.IsValid()) {
+     return forced_colors != ForcedColors::kNone;
+diff --git a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+index 4e4ca8dcb4..7e8a7a9c50 100644
+--- a/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
++++ b/third_party/blink/renderer/modules/webgpu/gpu_adapter.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "third_party/blink/renderer/modules/webgpu/gpu_adapter.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "services/metrics/public/cpp/ukm_builders.h"
+ #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+ #include "third_party/blink/renderer/bindings/core/v8/v8_object_builder.h"
+@@ -125,13 +129,43 @@ GPUAdapter::GPUAdapter(
+ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
+   bool is_fallback_adapter = adapter_type_ == wgpu::AdapterType::CPU;
+ 
++  // MoCi fp-17: spoof WebGPU adapter identity by --fingerprint-config so the
++  // real GPU vendor/architecture/device/description don't leak across envs.
++  String spoofed_vendor = vendor_;
++  String spoofed_arch = architecture_;
++  String spoofed_device = device_;
++  String spoofed_desc = description_;
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    auto p = cmd->GetSwitchValuePath("fingerprint-config");
++    if (!p.empty()) {
++      struct GpuId { const char* vendor; const char* arch; const char* device; const char* desc; };
++      static constexpr GpuId kPool[] = {
++        {"nvidia", "ada-lovelace", "GeForce RTX 4070", "NVIDIA GeForce RTX 4070"},
++        {"intel",  "xe-lpg",       "UHD Graphics",     "Intel(R) UHD Graphics"},
++        {"amd",    "rdna3",        "Radeon RX 7600",   "AMD Radeon RX 7600"},
++        {"nvidia", "ampere",       "GeForce RTX 3060", "NVIDIA GeForce RTX 3060"},
++        {"intel",  "xe-hpg",       "Arc A380",         "Intel(R) Arc A380"},
++        {"amd",    "rdna2",        "Radeon RX 6700",   "AMD Radeon RX 6700"},
++        {"nvidia", "turing",       "GeForce GTX 1660", "NVIDIA GeForce GTX 1660"},
++        {"intel",  "gen11",        "Iris Plus",        "Intel(R) Iris Plus"},
++      };
++      auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++      const auto& pick = kPool[seed % std::size(kPool)];
++      spoofed_vendor = pick.vendor;
++      spoofed_arch = pick.arch;
++      spoofed_device = pick.device;
++      spoofed_desc = pick.desc;
++    }
++  }
++
+   GPUAdapterInfo* info;
+   if (RuntimeEnabledFeatures::WebGPUDeveloperFeaturesEnabled()) {
+     // If WebGPU developer features have been enabled then provide all available
+     // adapter info values.
+     info = MakeGarbageCollected<GPUAdapterInfo>(
+-        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
+-        is_fallback_adapter, device_, description_, driver_,
++        spoofed_vendor, spoofed_arch, subgroup_min_size_, subgroup_max_size_,
++        is_fallback_adapter, spoofed_device, spoofed_desc, driver_,
+         FromDawnEnum(backend_type_), FromDawnEnum(adapter_type_),
+         d3d_shader_model_, vk_driver_version_, FromDawnEnum(power_preference_));
+ 
+@@ -144,7 +178,7 @@ GPUAdapterInfo* GPUAdapter::CreateAdapterInfoForAdapter() {
+     }
+   } else {
+     info = MakeGarbageCollected<GPUAdapterInfo>(
+-        vendor_, architecture_, subgroup_min_size_, subgroup_max_size_,
++        spoofed_vendor, spoofed_arch, subgroup_min_size_, subgroup_max_size_,
+         is_fallback_adapter);
+   }
+ 

@@ -1,0 +1,315 @@
+diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
+index 583f05f8dd..f2925411a1 100644
+--- a/third_party/blink/renderer/core/frame/navigator.cc
++++ b/third_party/blink/renderer/core/frame/navigator.cc
+@@ -45,9 +45,9 @@ String Navigator::productSub() const {
+ 
+ String Navigator::vendor() const {
+   // Do not change without good cause. History:
+-  // https://code.google.com/p/chromium/issues/detail?id=276813
++  // https://code.9oo91e.qjz9zk/p/chromium/issues/detail?id=276813
+   // https://www.w3.org/Bugs/Public/show_bug.cgi?id=27786
+-  // https://groups.google.com/a/chromium.org/forum/#!topic/blink-dev/QrgyulnqvmE
++  // https://groups.9oo91e.qjz9zk/a/ch40m1um.qjz9zk/forum/#!topic/blink-dev/QrgyulnqvmE
+   return "Google Inc.";
+ }
+ 
+@@ -98,12 +98,11 @@ bool Navigator::cookieEnabled() const {
+ }
+ 
+ bool Navigator::webdriver() const {
+-  if (RuntimeEnabledFeatures::AutomationControlledEnabled())
+-    return true;
+-
+-  bool automation_enabled = false;
+-  probe::ApplyAutomationOverride(GetExecutionContext(), automation_enabled);
+-  return automation_enabled;
++  // MoCi fp-09: always return false so anti-bot scripts can't trivially
++  // detect automation. CDP / DevTools attachment still works; just the
++  // navigator.webdriver getter lies. (The automation framework is still
++  // detectable via timing / process probing, but those are out of scope here.)
++  return false;
+ }
+ 
+ String Navigator::GetAcceptLanguages() {
+diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+index 2327015bc5..1a9caf4c44 100644
+--- a/third_party/blink/renderer/modules/speech/speech_synthesis.cc
++++ b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+@@ -27,6 +27,7 @@
+ 
+ #include <tuple>
+ 
++#include "base/command_line.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+@@ -96,6 +97,14 @@ void SpeechSynthesis::OnSetVoiceList(
+ }
+ 
+ const HeapVector<Member<SpeechSynthesisVoice>>& SpeechSynthesis::getVoices() {
++  // MoCi fp-13: when --fingerprint-config is set, never fetch the system voice
++  // list. voice_list_ stays empty so fingerprinters can't use installed-voices
++  // as a per-machine signature. Sites that need TTS will see "no voices" same
++  // as a fresh OS install — acceptable for cross-border seller workflows.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    return voice_list_;
++  }
+   // Kick off initialization here to ensure voice list gets populated.
+   std::ignore = TryEnsureMojomSynthesis();
+   return voice_list_;
+diff --git a/third_party/blink/renderer/modules/battery/battery_manager.cc b/third_party/blink/renderer/modules/battery/battery_manager.cc
+index 51cdc75cee..aa326148be 100644
+--- a/third_party/blink/renderer/modules/battery/battery_manager.cc
++++ b/third_party/blink/renderer/modules/battery/battery_manager.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "third_party/blink/renderer/modules/battery/battery_manager.h"
+ 
++#include "base/command_line.h"
+ #include "third_party/blink/public/mojom/frame/lifecycle.mojom-blink.h"
+ #include "third_party/blink/renderer/core/dom/dom_exception.h"
+ #include "third_party/blink/renderer/core/dom/events/event.h"
+@@ -22,6 +23,19 @@ const char BatteryManager::kSupplementName[] = "BatteryManager";
+ ScriptPromise<BatteryManager> BatteryManager::getBattery(
+     ScriptState* script_state,
+     Navigator& navigator) {
++  // MoCi fp-19: disable Battery API entirely when --fingerprint-config is set.
++  // Battery level + charging state is a high-entropy fingerprint signal
++  // (especially with timing/discharge curve). Brave disabled it by default,
++  // we follow suit. Sites that need battery get a rejected promise.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    return ScriptPromise<BatteryManager>::RejectWithDOMException(
++        script_state,
++        DOMException::Create(
++            "Battery Status API is disabled.",
++            DOMException::GetErrorName(DOMExceptionCode::kNotSupportedError)));
++  }
++
+   if (!navigator.DomWindow())
+     return EmptyPromise();
+ 
+diff --git a/third_party/blink/renderer/modules/bluetooth/bluetooth.cc b/third_party/blink/renderer/modules/bluetooth/bluetooth.cc
+index 4bf4df11b2..e6b8c7186d 100644
+--- a/third_party/blink/renderer/modules/bluetooth/bluetooth.cc
++++ b/third_party/blink/renderer/modules/bluetooth/bluetooth.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "build/build_config.h"
+ #include "mojo/public/cpp/bindings/associated_receiver_set.h"
+ #include "mojo/public/cpp/bindings/pending_associated_remote.h"
+@@ -405,6 +406,15 @@ ScriptPromise<BluetoothDevice> Bluetooth::requestDevice(
+     ScriptState* script_state,
+     const RequestDeviceOptions* options,
+     ExceptionState& exception_state) {
++  // MoCi fp-20: disable Web Bluetooth when --fingerprint-config is set.
++  // Bluetooth adapter info is a strong machine signature; Amazon never uses
++  // Web Bluetooth in its seller flow, so hiding it is pure win.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    exception_state.ThrowSecurityError("Web Bluetooth is disabled.");
++    return EmptyPromise();
++  }
++
+   LocalDOMWindow* window = GetSupplementable()->DomWindow();
+ 
+   if (IsRequestDenied(window, exception_state)) {
+diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
+index a57561775c..1b61a282a2 100644
+--- a/third_party/blink/renderer/core/events/navigator_events.cc
++++ b/third_party/blink/renderer/core/events/navigator_events.cc
+@@ -30,6 +30,7 @@
+ 
+ #include "third_party/blink/renderer/core/events/navigator_events.h"
+ 
++#include "base/command_line.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+@@ -38,6 +39,13 @@
+ namespace blink {
+ 
+ int32_t NavigatorEvents::maxTouchPoints(Navigator& navigator) {
++  // MoCi fp-32: force maxTouchPoints=0 (desktop, no touch) under fingerprint
++  // config. Spec-valid for desktop browsers and removes a high-cardinality
++  // fingerprint signal (touch device count varies wildly between hardware).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    return 0;
++  }
+   LocalDOMWindow* window = navigator.DomWindow();
+   return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
+ }
+diff --git a/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc b/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc
+index ea2db8e128..89d362b613 100644
+--- a/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc
++++ b/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "services/network/public/mojom/permissions_policy/permissions_policy_feature.mojom-blink.h"
+@@ -55,6 +56,13 @@ ScriptPromise<IDLUndefined> PressureObserver::observe(
+     V8PressureSource source,
+     PressureObserverOptions* options,
+     ExceptionState& exception_state) {
++  // MoCi fp-34: disable PressureObserver (CPU pressure leak = fingerprint).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
++                                      "PressureObserver disabled.");
++    return EmptyPromise();
++  }
+   ExecutionContext* execution_context = ExecutionContext::From(script_state);
+   if (execution_context->IsContextDestroyed()) {
+     exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
+diff --git a/third_party/blink/renderer/modules/idle/idle_detector.cc b/third_party/blink/renderer/modules/idle/idle_detector.cc
+index d2807edd83..dc28581eb7 100644
+--- a/third_party/blink/renderer/modules/idle/idle_detector.cc
++++ b/third_party/blink/renderer/modules/idle/idle_detector.cc
+@@ -6,6 +6,7 @@
+ 
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/time/time.h"
+ #include "mojo/public/cpp/bindings/remote.h"
+@@ -130,6 +131,13 @@ ScriptPromise<IDLUndefined> IdleDetector::start(
+     ScriptState* script_state,
+     const IdleOptions* options,
+     ExceptionState& exception_state) {
++  // MoCi fp-34: disable IdleDetector (user activity leak = fingerprint).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    exception_state.ThrowDOMException(DOMExceptionCode::kNotAllowedError,
++                                      "IdleDetector disabled.");
++    return EmptyPromise();
++  }
+   if (!GetExecutionContext() || GetExecutionContext()->IsContextDestroyed()) {
+     exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                       "Execution context is detached.");
+diff --git a/third_party/blink/renderer/modules/permissions/permissions.cc b/third_party/blink/renderer/modules/permissions/permissions.cc
+index 378eaa2bde..a2135d2aed 100644
+--- a/third_party/blink/renderer/modules/permissions/permissions.cc
++++ b/third_party/blink/renderer/modules/permissions/permissions.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "third_party/blink/public/common/permissions/permission_utils.h"
+ #include "third_party/blink/public/mojom/page/page.mojom-blink.h"
+@@ -119,6 +120,17 @@ ScriptPromise<PermissionStatus> Permissions::query(
+           script_state, exception_state.GetContext());
+   auto promise = resolver->Promise();
+ 
++  // MoCi fp-21: when --fingerprint-config is set, always return ASK (=prompt)
++  // for any permission query. Hides the user's actual permission state
++  // (a high-entropy signal for fingerprinters that probe N permissions).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    PermissionDescriptorPtr desc_copy = descriptor->Clone();
++    TaskComplete(resolver, std::move(desc_copy),
++                 mojom::blink::PermissionStatus::ASK);
++    return promise;
++  }
++
+   // If the current origin is a file scheme, it will unlikely return a
+   // meaningful value because most APIs are broken on file scheme and no
+   // permission prompt will be shown even if the returned permission will most
+diff --git a/third_party/blink/renderer/modules/mediastream/media_devices.cc b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+index 18855d9d71..4c989811ae 100644
+--- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
++++ b/third_party/blink/renderer/modules/mediastream/media_devices.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/notreached.h"
+@@ -1477,6 +1478,27 @@ void MediaDevices::DevicesEnumerated(
+     }
+   }
+ 
++  // MoCi fp-12: replace the real device enumeration with a fixed generic
++  // 3-device list so device count / IDs / labels can't be used to fingerprint
++  // or correlate environments. The replacement looks like a fresh install of
++  // chrome on a basic desktop: 1 audio input, 1 video input, 1 audio output,
++  // all with empty labels (matches the unprivileged default chromium returns
++  // when getUserMedia hasn't been granted).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    media_devices.clear();
++    media_devices.push_back(MakeGarbageCollected<InputDeviceInfo>(
++        String("default"), String(""), String(""),
++        mojom::blink::MediaDeviceType::kMediaAudioInput));
++    media_devices.push_back(MakeGarbageCollected<InputDeviceInfo>(
++        String("default"), String(""), String(""),
++        mojom::blink::MediaDeviceType::kMediaVideoInput));
++    media_devices.push_back(MakeGarbageCollected<MediaDeviceInfo>(
++        String("default"), String(""), String(""),
++        mojom::blink::MediaDeviceType::kMediaAudioOutput));
++    result_contains_nonempty_input_device_ids = false;
++  }
++
+   ReportCompletedEnumerateDevices(result_contains_nonempty_input_device_ids);
+   result_tracker->Resolve(media_devices);
+   tracer->End();
+diff --git a/third_party/blink/renderer/modules/quota/storage_manager.cc b/third_party/blink/renderer/modules/quota/storage_manager.cc
+index ef1c723ac2..1f34547fec 100644
+--- a/third_party/blink/renderer/modules/quota/storage_manager.cc
++++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "third_party/blink/renderer/modules/quota/storage_manager.h"
+ 
++#include <functional>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "mojo/public/cpp/bindings/callback_helpers.h"
+ #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
+ #include "third_party/blink/public/mojom/quota/quota_types.mojom-blink.h"
+@@ -169,6 +173,30 @@ ScriptPromise<StorageEstimate> StorageManager::estimate(
+       script_state, exception_state.GetContext());
+   auto promise = resolver->Promise();
+ 
++  // MoCi fp-29: spoof storage.estimate() quota to common disk sizes (no usage)
++  // so real disk free space + actual app data don't leak as fingerprint.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    auto p = cmd->GetSwitchValuePath("fingerprint-config");
++    if (!p.empty()) {
++      static constexpr int64_t kQuotaPool[] = {
++        60LL  * 1024 * 1024 * 1024,
++        120LL * 1024 * 1024 * 1024,
++        256LL * 1024 * 1024 * 1024,
++        500LL * 1024 * 1024 * 1024,
++        1024LL * 1024 * 1024 * 1024,
++        120LL * 1024 * 1024 * 1024,
++        256LL * 1024 * 1024 * 1024,
++        500LL * 1024 * 1024 * 1024,
++      };
++      auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++      QueryStorageUsageAndQuotaCallback(
++          resolver, mojom::blink::QuotaStatusCode::kOk, 0,
++          kQuotaPool[seed % std::size(kQuotaPool)], nullptr);
++      return promise;
++    }
++  }
++
+   auto callback = resolver->WrapCallbackInScriptScope(
+       BindOnce(&QueryStorageUsageAndQuotaCallback));
+   GetQuotaHost(execution_context)

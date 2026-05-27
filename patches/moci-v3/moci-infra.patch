@@ -1,0 +1,237 @@
+diff --git a/chrome/common/chrome_switches.cc b/chrome/common/chrome_switches.cc
+index 90108a2035..95d9a9ca24 100644
+--- a/chrome/common/chrome_switches.cc
++++ b/chrome/common/chrome_switches.cc
+@@ -322,6 +322,12 @@ const char kExtensionContentVerificationEnforceStrict[] = "enforce_strict";
+ // Name of the command line flag to allow the experimental actor API.
+ const char kExtensionExperimentalActor[] = "enable-extension-actor-api";
+ 
++// MoCi: Path to fingerprint configuration JSON file.
++// Per-environment 166-field config consumed by Canvas/Audio/WebGL/Font/TLS/...
++// patches. See moci-chromium-patches/docs/fingerprint-config-schema.json for
++// the JSON schema. Loaded once at process start by MoCiFingerprintConfig.
++const char kFingerprintConfig[] = "fingerprint-config";
++
+ // Specifies the variation of Zero State extensions toolbar recommendation to
+ // show.
+ // When a user with zero extensions installed clicks on the extensions puzzle
+@@ -354,7 +360,7 @@ const char kHideCrashRestoreBubble[] = "hide-crash-restore-bubble";
+ 
+ // Specifies which page will be displayed in newly-opened tabs. We need this
+ // for testing purposes so that the UI tests don't depend on what comes up for
+-// http://google.com.
++// http://9oo91e.qjz9zk.
+ const char kHomePage[] = "homepage";
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -475,7 +481,7 @@ const char kOpenInNewWindow[] = "new-window";
+ // Activates an existing tab or app window by URL or app id before creating
+ // anything new. Syntax: comma-ordered selectors. Bare URLs are exact.
+ // Add a trailing * for prefix. app:<app-id> targets PWAs.
+-// Example: --focus=https://meet.google.com/*,app:abc123
++// Example: --focus=https://meet.9oo91e.qjz9zk/*,app:abc123
+ const char kFocus[] = "focus";
+ 
+ // Specifies a file path to write JSON focus result information.
+diff --git a/chrome/common/chrome_switches.h b/chrome/common/chrome_switches.h
+index 53fd53ab4a..54972ec206 100644
+--- a/chrome/common/chrome_switches.h
++++ b/chrome/common/chrome_switches.h
+@@ -115,6 +115,8 @@ extern const char kExtensionContentVerificationBootstrap[];
+ extern const char kExtensionContentVerificationEnforce[];
+ extern const char kExtensionContentVerificationEnforceStrict[];
+ extern const char kExtensionExperimentalActor[];
++// MoCi: Path to fingerprint configuration JSON file.
++extern const char kFingerprintConfig[];
+ extern const char kForceAppMode[];
+ #if BUILDFLAG(IS_CHROMEOS)
+ extern const char kForceDevToolsAvailable[];
+diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
+index 1a692fe440..67f2fcbe5c 100644
+--- a/chrome/common/BUILD.gn
++++ b/chrome/common/BUILD.gn
+@@ -120,7 +120,6 @@ source_set("request_code_constants") {
+ static_library("common_lib") {
+   visibility = [
+     ":*",
+-    "//chrome/common/win:eventlog_messages",
+   ]
+   sources = [
+     "actor/action_result.cc",
+@@ -366,7 +365,6 @@ static_library("common_lib") {
+       "conflicts/remote_module_watcher_win.cc",
+       "conflicts/remote_module_watcher_win.h",
+     ]
+-    deps += [ "//chrome/common/win:eventlog_messages" ]
+ 
+     public_deps += [
+       "//components/dom_distiller/core",  # Needed by chrome_content_client.cc.
+@@ -449,6 +447,8 @@ static_library("non_code_constants") {
+     "chrome_constants.h",
+     "chrome_switches.cc",
+     "chrome_switches.h",
++    "moci/fingerprint_config.cc",
++    "moci/fingerprint_config.h",
+     "env_vars.h",
+   ]
+   configs += [ "//build/config/compiler:wexit_time_destructors" ]
+@@ -531,6 +531,7 @@ static_library("url_constants") {
+     "//components/optimization_guide/optimization_guide_internals/webui:url_constants",
+     "//components/password_manager/content/common",
+     "//components/safe_browsing/core/common",
++    "//components/supervised_user/core/common:buildflags",
+     "//device/vr/buildflags",
+   ]
+ 
+diff --git a/chrome/app/chrome_main_delegate.cc b/chrome/app/chrome_main_delegate.cc
+index d683cdd958..7489d58a9f 100644
+--- a/chrome/app/chrome_main_delegate.cc
++++ b/chrome/app/chrome_main_delegate.cc
+@@ -57,6 +57,7 @@
+ #include "chrome/common/chrome_switches.h"
+ #include "chrome/common/crash_keys.h"
+ #include "chrome/common/logging_chrome.h"
++#include "chrome/common/moci/fingerprint_config.h"
+ #include "chrome/common/profiler/chrome_thread_group_profiler_client.h"
+ #include "chrome/common/profiler/chrome_thread_profiler_client.h"
+ #include "chrome/common/profiler/core_unwinders.h"
+@@ -1333,6 +1334,13 @@ void ChromeMainDelegate::PreSandboxStartup() {
+   std::string process_type =
+       command_line.GetSwitchValueASCII(switches::kProcessType);
+ 
++  // MoCi: load --fingerprint-config JSON into the process-wide singleton.
++  // Idempotent: re-entered by every process type (browser/renderer/utility/gpu)
++  // but Init() ignores second call. Each process inherits the switch via
++  // Chromium's default child command line propagation.
++  moci::MoCiFingerprintConfig::Init(
++      command_line.GetSwitchValuePath(switches::kFingerprintConfig));
++
+   crash_reporter::InitializeCrashKeys();
+ 
+ #if BUILDFLAG(IS_POSIX)
+@@ -1510,6 +1518,11 @@ void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
+   SuppressWindowsErrorDialogs();
+ #endif
+ 
++  // MoCi: surface fingerprint-config load status now that logging is wired up.
++  // Init() ran earlier in PreSandboxStartup but any LOG() it emitted was lost
++  // on Windows because InitLogging runs here in SandboxInitialized.
++  moci::MoCiFingerprintConfig::Get().LogStatus();
++
+   // If this is a browser process, initialize the persistent histograms system
+   // unless headless mode is in effect. This is done as soon as possible to
+   // ensure metrics collection coverage. For Fuchsia, persistent histogram
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index f823433796..87eff66cef 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -305,7 +305,6 @@
+ #include "components/safe_browsing/core/browser/url_checker_delegate.h"
+ #include "components/safe_browsing/core/common/features.h"
+ #include "components/safe_browsing/core/common/hashprefix_realtime/hash_realtime_utils.h"
+-#include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+ #include "components/search_engines/search_engines_switches.h"
+ #include "components/search_engines/template_url_service.h"
+ #include "components/security_state/core/security_state.h"
+@@ -339,6 +338,7 @@
+ #include "content/public/browser/internal_webui_config.h"
+ #include "content/public/browser/isolated_web_apps_policy.h"
+ #include "content/public/browser/legacy_tech_cookie_issue_details.h"
++#include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/navigation_handle.h"
+ #include "content/public/browser/network_service_instance.h"
+ #include "content/public/browser/overlay_window.h"
+@@ -841,11 +841,15 @@ bool HandleNewTabPageLocationOverride(
+ 
+   // Don't change the URL when incognito mode.
+   if (profile->IsOffTheRecord()) {
++   if (!base::CommandLine::ForCurrentProcess()->HasSwitch("custom-ntp"))
+     return false;
+   }
+ 
+   std::string ntp_location =
+       profile->GetPrefs()->GetString(prefs::kNewTabPageLocationOverride);
++  if (base::CommandLine::ForCurrentProcess()->HasSwitch("custom-ntp"))
++    ntp_location = base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII("custom-ntp");
++  if (profile->IsOffTheRecord() && ntp_location.find("chrome://") != std::string::npos) return false;
+   if (ntp_location.empty()) {
+     return false;
+   }
+@@ -1114,7 +1118,7 @@ bool ShouldHonorPolicies() {
+ 
+ // Used by Enterprise policy. Disable blocking of navigations toward external
+ // applications from a sandboxed iframe.
+-// https://chromestatus.com/feature/5680742077038592
++// https://ch40mestatus.qjz9zk/feature/5680742077038592
+ const char kDisableSandboxExternalProtocolSwitch[] =
+     "disable-sandbox-external-protocols";
+ 
+@@ -1202,7 +1206,7 @@ void LaunchURL(
+               "'allow-top-navigation-by-user-activation', "
+               "'allow-top-navigation', or "
+               "'allow-popups'. See "
+-              "https://chromestatus.com/feature/5680742077038592 and "
++              "https://ch40mestatus.qjz9zk/feature/5680742077038592 and "
+               "https://chromeenterprise.google/policies/"
+               "#SandboxExternalProtocolBlocked");
+           return;
+@@ -1218,7 +1222,7 @@ void LaunchURL(
+               "'allow-top-navigation-by-user-activation', "
+               "'allow-top-navigation', or "
+               "'allow-popups'. See "
+-              "https://chromestatus.com/feature/5680742077038592 and "
++              "https://ch40mestatus.qjz9zk/feature/5680742077038592 and "
+               "https://chromeenterprise.google/policies/"
+               "#SandboxExternalProtocolBlocked");
+         }
+@@ -1541,7 +1545,7 @@ void ChromeContentBrowserClient::RegisterLocalStatePrefs(
+ void ChromeContentBrowserClient::RegisterProfilePrefs(
+     user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterBooleanPref(prefs::kDisable3DAPIs, false);
+-  registry->RegisterBooleanPref(prefs::kEnableHyperlinkAuditing, true);
++  registry->RegisterBooleanPref(prefs::kEnableHyperlinkAuditing, false);
+   // Register user prefs for mapping SitePerProcess and IsolateOrigins in
+   // user policy in addition to the same named ones in Local State (which are
+   // used for mapping the command-line flags).
+@@ -2123,7 +2127,7 @@ bool ChromeContentBrowserClient::ShouldTreatURLSchemeAsFirstPartyWhenTopLevel(
+   // This is needed to bypass the normal SameSite rules for any chrome:// page
+   // embedding a secure origin, regardless of the registrable domains of any
+   // intervening frames. For example, this is needed for browser UI to interact
+-  // with SameSite cookies on accounts.google.com, which is used for displaying
++  // with SameSite cookies on accounts.9oo91e.qjz9zk, which is used for displaying
+   // a list of available accounts on the NTP (chrome://new-tab-page), etc.
+   if (is_embedded_origin_secure && scheme == content::kChromeUIScheme) {
+     return true;
+@@ -2838,6 +2842,7 @@ void ChromeContentBrowserClient::AppendExtraCommandLineSwitches(
+   static const char* const kCommonSwitchNames[] = {
+       embedder_support::kUserAgent,
+       switches::kUserDataDir,  // Make logs go to the right file.
++      switches::kFingerprintConfig,  // MoCi: propagate to renderer/utility/gpu
+   };
+   command_line->CopySwitchesFrom(browser_command_line, kCommonSwitchNames);
+ 
+@@ -5278,7 +5283,6 @@ std::wstring ChromeContentBrowserClient::GetAppContainerSidForSandboxType(
+ #endif
+     case sandbox::mojom::Sandbox::kPrintCompositor:
+     case sandbox::mojom::Sandbox::kAudio:
+-    case sandbox::mojom::Sandbox::kScreenAI:
+     case sandbox::mojom::Sandbox::kSpeechRecognition:
+     case sandbox::mojom::Sandbox::kPdfConversion:
+     case sandbox::mojom::Sandbox::kService:
+@@ -5374,7 +5378,6 @@ bool ChromeContentBrowserClient::PreSpawnChild(
+     case sandbox::mojom::Sandbox::kPrintBackend:
+ #endif
+     case sandbox::mojom::Sandbox::kPrintCompositor:
+-    case sandbox::mojom::Sandbox::kScreenAI:
+     case sandbox::mojom::Sandbox::kAudio:
+     case sandbox::mojom::Sandbox::kOnDeviceModelExecution:
+     case sandbox::mojom::Sandbox::kSpeechRecognition:
+@@ -8040,7 +8043,7 @@ bool ChromeContentBrowserClient::AreV8OptimizationsEnabledForSite(
+   // familiarity hasn't been computed yet. When the navigation receives a
+   // response, this will be called a second time to determine the final
+   // SiteInstance and process, and site familiarity should be available then.
+-  // TODO(https://issues.chromium.org/452130797): Determine desired behavior
++  // TODO(https://issues.ch40m1um.qjz9zk/452130797): Determine desired behavior
+   // for speculative RenderFrameHosts.
+   return !site_familiarity_user_data ||
+          site_familiarity_user_data->is_site_familiar();

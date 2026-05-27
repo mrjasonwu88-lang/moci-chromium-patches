@@ -1,0 +1,183 @@
+diff --git a/chrome/app/theme/chromium/BRANDING b/chrome/app/theme/chromium/BRANDING
+index f8363d5b29..17dad0d8a5 100644
+--- a/chrome/app/theme/chromium/BRANDING
++++ b/chrome/app/theme/chromium/BRANDING
+@@ -1,10 +1,10 @@
+-COMPANY_FULLNAME=The Chromium Authors
+-COMPANY_SHORTNAME=The Chromium Authors
+-PRODUCT_FULLNAME=Chromium
+-PRODUCT_SHORTNAME=Chromium
+-PRODUCT_INSTALLER_FULLNAME=Chromium Installer
+-PRODUCT_INSTALLER_SHORTNAME=Chromium Installer
+-COPYRIGHT=Copyright @LASTCHANGE_YEAR@ The Chromium Authors. All rights reserved.
+-MAC_BUNDLE_ID=org.chromium.Chromium
++COMPANY_FULLNAME=Anhui MoCi Information Technology Co Ltd
++COMPANY_SHORTNAME=MoCi
++PRODUCT_FULLNAME=MoCi
++PRODUCT_SHORTNAME=MoCi
++PRODUCT_INSTALLER_FULLNAME=MoCi Installer
++PRODUCT_INSTALLER_SHORTNAME=MoCi Installer
++COPYRIGHT=Copyright @LASTCHANGE_YEAR@ Anhui MoCi Information Technology Co Ltd
++MAC_BUNDLE_ID=com.moci.browser
+ MAC_CREATOR_CODE=Cr24
+ MAC_TEAM_ID=
+diff --git a/chrome/app/chromium_strings.grd b/chrome/app/chromium_strings.grd
+index 576dd42018..95d66cf5cb 100644
+--- a/chrome/app/chromium_strings.grd
++++ b/chrome/app/chromium_strings.grd
+@@ -281,7 +281,7 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+         no separate file for it. Instead, we use the same file as Chromium, with
+         a few select overrides for the most prominent end-user strings.
+ 
+-        Rationale: https://goo.gle/chrome-for-testing#bookmark=id.n1rat320av91
++        Rationale: https://goo.gle.qjz9zk/chrome-for-testing#bookmark=id.n1rat320av91
+       -->
+       <if expr="_is_chrome_for_testing_branded">
+         <then>
+@@ -294,10 +294,10 @@ If you update this file, be sure also to update google_chrome_strings.grd. -->
+         </then>
+         <else>
+           <message name="IDS_PRODUCT_NAME" desc="The Chrome application name" translateable="false">
+-            Chromium
++            魔词浏览器
+           </message>
+           <message name="IDS_SHORT_PRODUCT_NAME" desc="The Chrome application short name." translateable="false">
+-            Chromium
++            魔词
+           </message>
+         </else>
+       </if>
+@@ -574,7 +574,7 @@ New bookmarks can’t be saved in your account until you delete some. If you sig
+         To send a number from here to your Android phone, sign in to Chromium on both devices.
+       </message>
+       <message name="IDS_BROWSER_SHARING_CLICK_TO_CALL_DIALOG_HELP_TEXT_NO_DEVICES_ORIGIN" desc="The label to be shown as a help text of the dialog when user click on a phone number, if there are no phones to choose from.">
+-        To send a number from <ph name="ORIGIN">$1<ex>www.google.com</ex></ph> to your Android phone, sign in to Chromium on both devices.
++        To send a number from <ph name="ORIGIN">$1<ex>www.9oo91e.qjz9zk</ex></ph> to your Android phone, sign in to Chromium on both devices.
+       </message>
+       <message name="IDS_BROWSER_SHARING_ERROR_DIALOG_TEXT_DEVICE_NOT_FOUND" desc="The text to be shown on the dialog when an error occurred because the device is not synced.">
+         Make sure you are signed in to Chromium on your <ph name="TARGET_DEVICE_NAME">$1<ex>Pixel XL</ex></ph> and then try sending again.
+@@ -919,7 +919,7 @@ Chromium is unable to recover your settings.
+ 
+         <!-- Extension uninstall prompt -->
+         <message name="IDS_EXTENSION_UNINSTALL_PROMPT_REMOVE_DATA_CHECKBOX" desc="Checkbox text to ask the user whether they want to remove associated data at uninstall time. Only used when uninstalling an app associated with a particular website.">
+-          Also delete data from Chromium (<ph name="URL">$1<ex>www.google.com</ex></ph>)
++          Also delete data from Chromium (<ph name="URL">$1<ex>www.9oo91e.qjz9zk</ex></ph>)
+         </message>
+ 
+         <!-- Extension alerts. -->
+@@ -1133,7 +1133,7 @@ Chromium is unable to recover your settings.
+       <!-- One click sign-in infobar -->
+       <if expr="not is_chromeos">
+         <message name="IDS_SYNC_WRONG_EMAIL" desc="Message shown when sync setup failed due to the user entering the wrong email address for sign-in.">
+-          You were signed in to Chromium as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@gmail.com</ex></ph>. Please use the same account to sign in again.
++          You were signed in to Chromium as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@9ma1l.qjz9zk</ex></ph>. Please use the same account to sign in again.
+         </message>
+         <message name="IDS_SYNC_USED_PROFILE_ERROR" desc="An error message shown when user tries to sign in to a profile that is used by other user name before.">
+           Someone previously signed in to Chromium on this computer as <ph name="ACCOUNT_EMAIL_LAST">$1<ex>user@example.com</ex></ph>. Please create a new Chromium user to keep your information separate.
+@@ -1209,7 +1209,7 @@ Chromium is unable to recover your settings.
+           The extension "<ph name="EXTENSION_NAME">$1<ex>Screencast</ex></ph>" wants you to sign in to Chromium
+         </message>
+         <message name="IDS_EXTENSION_ASKS_IDENTITY_WHILE_SIGNED_IN_WEB_ONLY_BODY_PART_1" desc="This string is the body of a dialog intended to inform the user that one of their installed extensions wants them to sign in to Chrome to be able to use their Google Account.">
+-         To use this extension as <ph name="USER_EMAIL_ADDRESS">$1<ex>elisa.g.beckett@gmail.com</ex></ph>, sign in to Chromium.
++         To use this extension as <ph name="USER_EMAIL_ADDRESS">$1<ex>elisa.g.beckett@9ma1l.qjz9zk</ex></ph>, sign in to Chromium.
+         </message>
+         <message name="IDS_EXTENSION_ASKS_IDENTITY_WHILE_SIGNED_IN_WEB_ONLY_TITLE_FALLBACK" desc="This string is the heading of a dialog intended to inform the user that one of their installed extensions wants them to sign in to Chrome to be able to use their Google Account. Used when the extension name couldn't be retrieved.">
+           An extension wants you to sign in to Chromium
+@@ -1281,7 +1281,7 @@ Chromium is unable to recover your settings.
+       <!-- Signin Email Confirmation tab modal dialog -->
+       <if expr="not is_chromeos">
+         <message name="IDS_SIGNIN_EMAIL_CONFIRMATION_TITLE" desc="Title of the signin email confirmation tab modal dialog.">
+-          <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@gmail.com</ex></ph> was previously using Chromium
++          <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@9ma1l.qjz9zk</ex></ph> was previously using Chromium
+         </message>
+       </if>
+ 
+@@ -1321,16 +1321,16 @@ Chromium is unable to recover your settings.
+           Switch to existing Chromium profile?
+         </message>
+         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_SWITCH_BUBBLE_DESC_V2" desc="This string is the body text for a dialog that appears when the user is already signed in to Chromium, but they just tried to sign in to a Google service (like Gmail) with a different Google Account that already has its own Chromium profile on this device. The body text is after the 'Switch to existing Chromium profile?' string. The tone should be inviting and helpful.">
+-          You're already signed in as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@gmail.com</ex></ph> in another Chromium profile
++          You're already signed in as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@9ma1l.qjz9zk</ex></ph> in another Chromium profile
+         </message>
+         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_SWITCH_BUBBLE_DESC_V2_SUPERVISED" desc="This string is the body text for a dialog that appears when the user is already signed in to Chromium, but they just tried to sign in to a Google service (like Gmail) with a different supervised Google Account that already has its own Chromium profile on this device. The body text is after the 'Switch to existing Chromium profile?' string. The tone should be inviting and helpful.">
+-          To stay safer online with your parent’s choices, switch to your Chromium profile where you’re already signed in as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@gmail.com</ex></ph>
++          To stay safer online with your parent’s choices, switch to your Chromium profile where you’re already signed in as <ph name="USER_EMAIL_ADDRESS">$1<ex>foo@9ma1l.qjz9zk</ex></ph>
+         </message>
+         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_CONSUMER_BUBBLE_DESC" desc="Body of the web signin interception bubble">
+           <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in to this Chromium profile. To keep your browsing separate, Chromium can create your own profile for you.
+         </message>
+         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_CREATE_BUBBLE_DESC" desc="Body of the web signin interception bubble. It is shown when the user signs in on the web while they already have another account present in the current profile.">
+-          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in.  To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>foo@gmail.com</ex></ph>.
++          <ph name="EXISTING_USER">$1<ex>Elisa</ex></ph> is already signed in.  To keep your browsing separate, sign in to Chromium in your own profile as <ph name="USER_EMAIL_ADDRESS">$2<ex>foo@9ma1l.qjz9zk</ex></ph>.
+         </message>
+         <message name="IDS_SIGNIN_DICE_WEB_INTERCEPT_BUBBLE_CHROME_SIGNIN_SUBTITLE" desc="Subtitle of the Chromium Signin Bubble intercept that is shown when a signed out user signs in on the web with it's first account.">
+           To get your passwords and more on all your devices, sign in to Chromium
+@@ -1747,16 +1747,16 @@ Chromium is unable to recover your settings.
+         Update Chromium
+       </message>
+       <message name="IDS_SYNC_ERROR_PASSPHRASE_USER_MENU_ERROR_DESCRIPTION" desc="Error description of the sync/signin error header of desktop user menu.">
+-        Enter your passphrase to use and save Chromium data in your account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@gmail.com</ex></ph>
++        Enter your passphrase to use and save Chromium data in your account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@9ma1l.qjz9zk</ex></ph>
+       </message>
+       <message name="IDS_SYNC_ERROR_TRUSTED_VAULT_USER_MENU_ERROR_DESCRIPTION" desc="Error description of the sync/signin error header of desktop user menu.">
+-        Verify it's you to use and save Chromium data in your account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@gmail.com</ex></ph>
++        Verify it's you to use and save Chromium data in your account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@9ma1l.qjz9zk</ex></ph>
+       </message>
+        <message name="IDS_SYNC_ERROR_UPGRADE_CLIENT_USER_MENU_TITLE" desc="Error message to resolve sync protocol error for out-of-date client.">
+         To use and save Chromium data in your Google Account, update Chromium
+       </message>
+       <message name="IDS_SYNC_ERROR_UPGRADE_CLIENT_USER_MENU_ERROR_DESCRIPTION" desc="Error message to resolve sync protocol error for out-of-date client.">
+-        Update Chromium to keeping using the Chromium data in your Google Account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@gmail.com</ex></ph>
++        Update Chromium to keeping using the Chromium data in your Google Account, <ph name="ACCOUNT_EMAIL">$1<ex>elisa.beckett@9ma1l.qjz9zk</ex></ph>
+       </message>
+ 
+       <!-- Sync errors. -->
+diff --git a/build/util/version.py b/build/util/version.py
+index c69969b917..9e7adf13fb 100755
+--- a/build/util/version.py
++++ b/build/util/version.py
+@@ -26,7 +26,9 @@ def FetchValuesFromFile(values_dict, file_name):
+ 
+   The file must exist, otherwise you get the Python exception from open().
+   """
+-  with open(file_name, 'r') as f:
++  # MoCi: force UTF-8 so BRANDING with Chinese chars (跨境客 / 安徽魔词) doesn't
++  # crash Windows default GBK locale decoding.
++  with open(file_name, 'r', encoding='utf-8') as f:
+     for line in f.readlines():
+       key, val = line.rstrip('\r\n').split('=', 1)
+       values_dict[key] = val
+@@ -99,7 +101,9 @@ def SubstFile(file_name, values):
+ 
+   This is like SubstTemplate, except it operates on a file.
+   """
+-  with open(file_name, 'r') as f:
++  # MoCi: force UTF-8 so substituted Chinese strings (跨境客) don't get
++  # corrupted by Windows default GBK encoding.
++  with open(file_name, 'r', encoding='utf-8') as f:
+     template = f.read()
+   return SubstTemplate(template, values)
+ 
+@@ -111,16 +115,19 @@ def WriteIfChanged(file_name, contents, mode):
+   Does nothing if the contents aren't different than the current contents.
+   """
+   try:
+-    with open(file_name, 'r') as f:
++    # MoCi: UTF-8 read/write so generated .h with Chinese product name
++    # round-trips cleanly. UnicodeDecodeError treated like missing file
++    # (old contents from pre-MoCi build was GBK-encoded, can't decode).
++    with open(file_name, 'r', encoding='utf-8') as f:
+       old_contents = f.read()
+-  except EnvironmentError:
++  except (EnvironmentError, UnicodeDecodeError):
+     pass
+   else:
+     if contents == old_contents and mode == stat.S_IMODE(
+         os.lstat(file_name).st_mode):
+       return
+     os.unlink(file_name)
+-  with open(file_name, 'w') as f:
++  with open(file_name, 'w', encoding='utf-8') as f:
+     f.write(contents)
+   os.chmod(file_name, mode)
+ 
