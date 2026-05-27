@@ -1,0 +1,43 @@
+diff --git a/third_party/boringssl/src/ssl/handshake.cc b/third_party/boringssl/src/ssl/handshake.cc
+index 88b42a7..4857b99 100644
+--- a/third_party/boringssl/src/ssl/handshake.cc
++++ b/third_party/boringssl/src/ssl/handshake.cc
+@@ -16,6 +16,7 @@
+ #include <openssl/ssl.h>
+ 
+ #include <assert.h>
++#include <stdlib.h>  // [MoCi fp-08] getenv
+ 
+ #include <algorithm>
+ #include <utility>
+@@ -67,7 +68,29 @@ SSL_HANDSHAKE::SSL_HANDSHAKE(SSL *ssl_arg)
+   // |RAND_bytes| repeatedly and makes the values consistent within a
+   // connection. The latter is so the second ClientHello matches after
+   // HelloRetryRequest and so supported_groups and key_shares are consistent.
+-  RAND_bytes(grease_seed, sizeof(grease_seed));
++  //
++  // [MoCi fp-08] When chromium-side exports MOCI_FINGERPRINT_CONFIG_PATH
++  // (chrome_main_delegate.cc PreSandboxStartup), derive the 8 GREASE seed
++  // bytes deterministically from a FNV-1a hash of that path. Result:
++  // JA3/JA4 stable within environment, varies across environments. Same
++  // env every TLS handshake produces identical GREASE positions for
++  // cipher/group/extension1/2/version/ticket/ech_config_id. Without env
++  // var (no fp-config), keep upstream RAND_bytes behavior.
++  const char* moci_path = getenv("MOCI_FINGERPRINT_CONFIG_PATH");
++  if (moci_path && moci_path[0]) {
++    uint64_t h = 14695981039346656037ULL;  // FNV-1a 64 offset basis
++    for (const char* p = moci_path; *p; ++p) {
++      h ^= static_cast<uint64_t>(static_cast<unsigned char>(*p));
++      h *= 1099511628211ULL;                // FNV-1a 64 prime
++    }
++    for (size_t i = 0; i < sizeof(grease_seed); ++i) {
++      grease_seed[i] = static_cast<uint8_t>(h & 0xff);
++      // PCG-like step to spread bytes
++      h = (h * 6364136223846793005ULL) + 1442695040888963407ULL;
++    }
++  } else {
++    RAND_bytes(grease_seed, sizeof(grease_seed));
++  }
+ }
+ 
+ SSL_HANDSHAKE::~SSL_HANDSHAKE() {

@@ -1,90 +1,5 @@
-diff --git a/chrome/common/chrome_switches.cc b/chrome/common/chrome_switches.cc
-index 90108a2035..95d9a9ca24 100644
---- a/chrome/common/chrome_switches.cc
-+++ b/chrome/common/chrome_switches.cc
-@@ -322,6 +322,12 @@ const char kExtensionContentVerificationEnforceStrict[] = "enforce_strict";
- // Name of the command line flag to allow the experimental actor API.
- const char kExtensionExperimentalActor[] = "enable-extension-actor-api";
- 
-+// MoCi: Path to fingerprint configuration JSON file.
-+// Per-environment 166-field config consumed by Canvas/Audio/WebGL/Font/TLS/...
-+// patches. See moci-chromium-patches/docs/fingerprint-config-schema.json for
-+// the JSON schema. Loaded once at process start by MoCiFingerprintConfig.
-+const char kFingerprintConfig[] = "fingerprint-config";
-+
- // Specifies the variation of Zero State extensions toolbar recommendation to
- // show.
- // When a user with zero extensions installed clicks on the extensions puzzle
-@@ -354,7 +360,7 @@ const char kHideCrashRestoreBubble[] = "hide-crash-restore-bubble";
- 
- // Specifies which page will be displayed in newly-opened tabs. We need this
- // for testing purposes so that the UI tests don't depend on what comes up for
--// http://google.com.
-+// http://9oo91e.qjz9zk.
- const char kHomePage[] = "homepage";
- 
- #if !BUILDFLAG(IS_ANDROID)
-@@ -475,7 +481,7 @@ const char kOpenInNewWindow[] = "new-window";
- // Activates an existing tab or app window by URL or app id before creating
- // anything new. Syntax: comma-ordered selectors. Bare URLs are exact.
- // Add a trailing * for prefix. app:<app-id> targets PWAs.
--// Example: --focus=https://meet.google.com/*,app:abc123
-+// Example: --focus=https://meet.9oo91e.qjz9zk/*,app:abc123
- const char kFocus[] = "focus";
- 
- // Specifies a file path to write JSON focus result information.
-diff --git a/chrome/common/chrome_switches.h b/chrome/common/chrome_switches.h
-index 53fd53ab4a..54972ec206 100644
---- a/chrome/common/chrome_switches.h
-+++ b/chrome/common/chrome_switches.h
-@@ -115,6 +115,8 @@ extern const char kExtensionContentVerificationBootstrap[];
- extern const char kExtensionContentVerificationEnforce[];
- extern const char kExtensionContentVerificationEnforceStrict[];
- extern const char kExtensionExperimentalActor[];
-+// MoCi: Path to fingerprint configuration JSON file.
-+extern const char kFingerprintConfig[];
- extern const char kForceAppMode[];
- #if BUILDFLAG(IS_CHROMEOS)
- extern const char kForceDevToolsAvailable[];
-diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
-index 1a692fe440..67f2fcbe5c 100644
---- a/chrome/common/BUILD.gn
-+++ b/chrome/common/BUILD.gn
-@@ -120,7 +120,6 @@ source_set("request_code_constants") {
- static_library("common_lib") {
-   visibility = [
-     ":*",
--    "//chrome/common/win:eventlog_messages",
-   ]
-   sources = [
-     "actor/action_result.cc",
-@@ -366,7 +365,6 @@ static_library("common_lib") {
-       "conflicts/remote_module_watcher_win.cc",
-       "conflicts/remote_module_watcher_win.h",
-     ]
--    deps += [ "//chrome/common/win:eventlog_messages" ]
- 
-     public_deps += [
-       "//components/dom_distiller/core",  # Needed by chrome_content_client.cc.
-@@ -449,6 +447,8 @@ static_library("non_code_constants") {
-     "chrome_constants.h",
-     "chrome_switches.cc",
-     "chrome_switches.h",
-+    "moci/fingerprint_config.cc",
-+    "moci/fingerprint_config.h",
-     "env_vars.h",
-   ]
-   configs += [ "//build/config/compiler:wexit_time_destructors" ]
-@@ -531,6 +531,7 @@ static_library("url_constants") {
-     "//components/optimization_guide/optimization_guide_internals/webui:url_constants",
-     "//components/password_manager/content/common",
-     "//components/safe_browsing/core/common",
-+    "//components/supervised_user/core/common:buildflags",
-     "//device/vr/buildflags",
-   ]
- 
 diff --git a/chrome/app/chrome_main_delegate.cc b/chrome/app/chrome_main_delegate.cc
-index d683cdd958..7489d58a9f 100644
+index d683cdd958..64d00581be 100644
 --- a/chrome/app/chrome_main_delegate.cc
 +++ b/chrome/app/chrome_main_delegate.cc
 @@ -57,6 +57,7 @@
@@ -95,7 +10,7 @@ index d683cdd958..7489d58a9f 100644
  #include "chrome/common/profiler/chrome_thread_group_profiler_client.h"
  #include "chrome/common/profiler/chrome_thread_profiler_client.h"
  #include "chrome/common/profiler/core_unwinders.h"
-@@ -1333,6 +1334,13 @@ void ChromeMainDelegate::PreSandboxStartup() {
+@@ -1333,6 +1334,32 @@ void ChromeMainDelegate::PreSandboxStartup() {
    std::string process_type =
        command_line.GetSwitchValueASCII(switches::kProcessType);
  
@@ -106,10 +21,29 @@ index d683cdd958..7489d58a9f 100644
 +  moci::MoCiFingerprintConfig::Init(
 +      command_line.GetSwitchValuePath(switches::kFingerprintConfig));
 +
++  // [MoCi fp-08] Export the fingerprint-config path as env var so BoringSSL
++  // (which can't depend on //base) can read it via getenv() to derive a
++  // deterministic TLS GREASE seed per environment. Without this, TLS GREASE
++  // values vary per handshake → JA3 hash unstable. With this, JA3 hash is
++  // stable within an environment and varies across environments. Set in
++  // PreSandboxStartup so the value is in env before any child process spawns
++  // or sandbox lockdown happens.
++  {
++    auto fp_path = command_line.GetSwitchValueNative(
++        switches::kFingerprintConfig);
++    if (!fp_path.empty()) {
++#if BUILDFLAG(IS_WIN)
++      _wputenv_s(L"MOCI_FINGERPRINT_CONFIG_PATH", fp_path.c_str());
++#else
++      setenv("MOCI_FINGERPRINT_CONFIG_PATH", fp_path.c_str(), 1);
++#endif
++    }
++  }
++
    crash_reporter::InitializeCrashKeys();
  
  #if BUILDFLAG(IS_POSIX)
-@@ -1510,6 +1518,11 @@ void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
+@@ -1510,6 +1537,11 @@ void ChromeMainDelegate::SandboxInitialized(const std::string& process_type) {
    SuppressWindowsErrorDialogs();
  #endif
  
@@ -235,3 +169,88 @@ index f823433796..87eff66cef 100644
    // for speculative RenderFrameHosts.
    return !site_familiarity_user_data ||
           site_familiarity_user_data->is_site_familiar();
+diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
+index 1a692fe440..67f2fcbe5c 100644
+--- a/chrome/common/BUILD.gn
++++ b/chrome/common/BUILD.gn
+@@ -120,7 +120,6 @@ source_set("request_code_constants") {
+ static_library("common_lib") {
+   visibility = [
+     ":*",
+-    "//chrome/common/win:eventlog_messages",
+   ]
+   sources = [
+     "actor/action_result.cc",
+@@ -366,7 +365,6 @@ static_library("common_lib") {
+       "conflicts/remote_module_watcher_win.cc",
+       "conflicts/remote_module_watcher_win.h",
+     ]
+-    deps += [ "//chrome/common/win:eventlog_messages" ]
+ 
+     public_deps += [
+       "//components/dom_distiller/core",  # Needed by chrome_content_client.cc.
+@@ -449,6 +447,8 @@ static_library("non_code_constants") {
+     "chrome_constants.h",
+     "chrome_switches.cc",
+     "chrome_switches.h",
++    "moci/fingerprint_config.cc",
++    "moci/fingerprint_config.h",
+     "env_vars.h",
+   ]
+   configs += [ "//build/config/compiler:wexit_time_destructors" ]
+@@ -531,6 +531,7 @@ static_library("url_constants") {
+     "//components/optimization_guide/optimization_guide_internals/webui:url_constants",
+     "//components/password_manager/content/common",
+     "//components/safe_browsing/core/common",
++    "//components/supervised_user/core/common:buildflags",
+     "//device/vr/buildflags",
+   ]
+ 
+diff --git a/chrome/common/chrome_switches.cc b/chrome/common/chrome_switches.cc
+index 90108a2035..95d9a9ca24 100644
+--- a/chrome/common/chrome_switches.cc
++++ b/chrome/common/chrome_switches.cc
+@@ -322,6 +322,12 @@ const char kExtensionContentVerificationEnforceStrict[] = "enforce_strict";
+ // Name of the command line flag to allow the experimental actor API.
+ const char kExtensionExperimentalActor[] = "enable-extension-actor-api";
+ 
++// MoCi: Path to fingerprint configuration JSON file.
++// Per-environment 166-field config consumed by Canvas/Audio/WebGL/Font/TLS/...
++// patches. See moci-chromium-patches/docs/fingerprint-config-schema.json for
++// the JSON schema. Loaded once at process start by MoCiFingerprintConfig.
++const char kFingerprintConfig[] = "fingerprint-config";
++
+ // Specifies the variation of Zero State extensions toolbar recommendation to
+ // show.
+ // When a user with zero extensions installed clicks on the extensions puzzle
+@@ -354,7 +360,7 @@ const char kHideCrashRestoreBubble[] = "hide-crash-restore-bubble";
+ 
+ // Specifies which page will be displayed in newly-opened tabs. We need this
+ // for testing purposes so that the UI tests don't depend on what comes up for
+-// http://google.com.
++// http://9oo91e.qjz9zk.
+ const char kHomePage[] = "homepage";
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -475,7 +481,7 @@ const char kOpenInNewWindow[] = "new-window";
+ // Activates an existing tab or app window by URL or app id before creating
+ // anything new. Syntax: comma-ordered selectors. Bare URLs are exact.
+ // Add a trailing * for prefix. app:<app-id> targets PWAs.
+-// Example: --focus=https://meet.google.com/*,app:abc123
++// Example: --focus=https://meet.9oo91e.qjz9zk/*,app:abc123
+ const char kFocus[] = "focus";
+ 
+ // Specifies a file path to write JSON focus result information.
+diff --git a/chrome/common/chrome_switches.h b/chrome/common/chrome_switches.h
+index 53fd53ab4a..54972ec206 100644
+--- a/chrome/common/chrome_switches.h
++++ b/chrome/common/chrome_switches.h
+@@ -115,6 +115,8 @@ extern const char kExtensionContentVerificationBootstrap[];
+ extern const char kExtensionContentVerificationEnforce[];
+ extern const char kExtensionContentVerificationEnforceStrict[];
+ extern const char kExtensionExperimentalActor[];
++// MoCi: Path to fingerprint configuration JSON file.
++extern const char kFingerprintConfig[];
+ extern const char kForceAppMode[];
+ #if BUILDFLAG(IS_CHROMEOS)
+ extern const char kForceDevToolsAvailable[];
