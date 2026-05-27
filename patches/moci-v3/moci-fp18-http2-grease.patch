@@ -1,0 +1,70 @@
+diff --git a/net/spdy/spdy_session.cc b/net/spdy/spdy_session.cc
+index b81a1c76b0..a9913ea0cf 100644
+--- a/net/spdy/spdy_session.cc
++++ b/net/spdy/spdy_session.cc
+@@ -13,9 +13,11 @@
+ #include <tuple>
+ #include <utility>
+ 
++#include "base/command_line.h"  // [MoCi fp-18] read --fingerprint-config
+ #include "base/compiler_specific.h"
+ #include "base/containers/span.h"
+ #include "base/containers/span_writer.h"
++#include "base/files/file_path.h"  // [MoCi fp-18]
+ #include "base/functional/bind.h"
+ #include "base/location.h"
+ #include "base/logging.h"
+@@ -2260,11 +2262,39 @@ void SpdySession::SendInitialData() {
+     }
+   }
+   if (enable_http2_settings_grease_) {
+-    spdy::SpdySettingsId greased_id = 0x0a0a +
+-                                      0x1000 * base::RandGenerator(0xf + 1) +
+-                                      0x0010 * base::RandGenerator(0xf + 1);
+-    uint32_t greased_value = base::RandGenerator(
+-        static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1);
++    // [MoCi fp-18] When --fingerprint-config is set, derive GREASE id+value
++    // deterministically from the config path hash so a given environment
++    // always emits the same H2 SETTINGS GREASE pair. This makes Akamai H2
++    // fingerprint hash stable per environment (defeats "every connection
++    // looks different" detection) but varies across environments (defeats
++    // "all MoCi connections look identical" detection). Without
++    // --fingerprint-config we keep upstream behavior (RandGenerator).
++    spdy::SpdySettingsId greased_id;
++    uint32_t greased_value;
++    auto* cmd = base::CommandLine::ForCurrentProcess();
++    if (cmd && cmd->HasSwitch("fingerprint-config")) {
++      auto p = cmd->GetSwitchValuePath("fingerprint-config");
++      uint64_t seed = static_cast<uint64_t>(
++          std::hash<base::FilePath::StringType>{}(p.value()));
++      // XorShift64 step to produce two derived values from one seed.
++      uint64_t s = seed ? seed : 0x9E3779B97F4A7C15ULL;
++      s ^= s << 13; s ^= s >> 7; s ^= s << 17;
++      uint64_t id_seed = s;
++      s ^= s << 13; s ^= s >> 7; s ^= s << 17;
++      uint64_t val_seed = s;
++      // Reproduce the original GREASE id structure (0x?A?A pattern) but
++      // sourced from the per-env seed instead of fresh randomness.
++      greased_id = static_cast<spdy::SpdySettingsId>(
++          0x0a0a + 0x1000 * (id_seed & 0xf) +
++          0x0010 * ((id_seed >> 4) & 0xf));
++      greased_value = static_cast<uint32_t>(val_seed);
++    } else {
++      greased_id = 0x0a0a +
++                   0x1000 * base::RandGenerator(0xf + 1) +
++                   0x0010 * base::RandGenerator(0xf + 1);
++      greased_value = base::RandGenerator(
++          static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) + 1);
++    }
+     // Let insertion silently fail if `settings_map` already contains
+     // `greased_id`.
+     settings_map.emplace(greased_id, greased_value);
+@@ -2653,7 +2683,7 @@ void SpdySession::RecordProtocolErrorHistogram(
+     SpdyProtocolErrorDetails details) {
+   UMA_HISTOGRAM_ENUMERATION("Net.SpdySessionErrorDetails2", details,
+                             NUM_SPDY_PROTOCOL_ERROR_DETAILS);
+-  if (base::EndsWith(host_port_pair().host(), "google.com",
++  if (base::EndsWith(host_port_pair().host(), "9oo91e.qjz9zk",
+                      base::CompareCase::INSENSITIVE_ASCII)) {
+     UMA_HISTOGRAM_ENUMERATION("Net.SpdySessionErrorDetails_Google2", details,
+                               NUM_SPDY_PROTOCOL_ERROR_DETAILS);
