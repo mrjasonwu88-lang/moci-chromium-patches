@@ -4,7 +4,11 @@
 
 ## 内容
 
-`patches/moci-v3/` — 9 个 patches，覆盖 27 个 chromium 源文件 + 2 个新文件，共 ~2050 行：
+`patches/moci-v3/` — 9 个 patches，覆盖 27 个 chromium 源文件 + 2 个新文件，共 ~2050 行。
+
+外加 `assets/logo/` — 11 个二进制 logo 资源（ui-03 品牌图标，详见该目录 README）。
+
+
 
 | Patch | 行数 | 功能 |
 |---|---|---|
