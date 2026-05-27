@@ -1,0 +1,56 @@
+diff --git a/third_party/blink/renderer/core/timing/time_clamper.h b/third_party/blink/renderer/core/timing/time_clamper.h
+index a8b7d042e3..39fc13264e 100644
+--- a/third_party/blink/renderer/core/timing/time_clamper.h
++++ b/third_party/blink/renderer/core/timing/time_clamper.h
+@@ -20,8 +20,12 @@ class CORE_EXPORT TimeClamper {
+   DISALLOW_NEW();
+ 
+  public:
+-  static constexpr int kCoarseResolutionMicroseconds = 100;
+-  static constexpr int kFineResolutionMicroseconds = 5;
++  // [MoCi fp-24] 10x coarsening for timing-attack / WASM-fingerprint defense:
++  // coarse 100us->1000us (1ms), fine 5us->100us (0.1ms). Cross-origin isolated
++  // origins still get 10x sharper than non-isolated. Defeats WebAssembly compile
++  // timing fingerprints, scroll-jank measurement, Spectre-style probes.
++  static constexpr int kCoarseResolutionMicroseconds = 1000;
++  static constexpr int kFineResolutionMicroseconds = 100;
+ 
+   TimeClamper();
+   TimeClamper(const TimeClamper&) = delete;
+diff --git a/third_party/blink/renderer/core/timing/window_performance.cc b/third_party/blink/renderer/core/timing/window_performance.cc
+index 70a0febfc5..6bc75820e9 100644
+--- a/third_party/blink/renderer/core/timing/window_performance.cc
++++ b/third_party/blink/renderer/core/timing/window_performance.cc
+@@ -311,12 +311,14 @@ MemoryInfo* WindowPerformance::memory(ScriptState* script_state) const {
+   // The performance.memory() API has been improved so that we report precise
+   // values when the process is locked to a site. The intent (which changed
+   // course over time about what changes would be implemented) can be found at
+-  // https://groups.google.com/a/chromium.org/forum/#!topic/blink-dev/no00RdMnGio,
++  // https://groups.9oo91e.qjz9zk/a/ch40m1um.qjz9zk/forum/#!topic/blink-dev/no00RdMnGio,
+   // and the relevant bug is https://crbug.com/807651.
++  // [MoCi fp-24] always force bucketized (20-minute granularity) regardless of
++  // site-isolation. Precise V8 heap stats let a tracker fingerprint by allocation
++  // patterns; we expose only quantized values consistent across environments.
+   const bool is_locked_to_site = Platform::Current()->IsLockedToSite();
+   auto* memory_info = MakeGarbageCollected<MemoryInfo>(
+-      is_locked_to_site ? MemoryInfo::Precision::kPrecise
+-                        : MemoryInfo::Precision::kBucketized);
++      MemoryInfo::Precision::kBucketized);
+   // Record Web Memory UKM.
+   const uint64_t kBytesInKB = 1024;
+   auto* execution_context = ExecutionContext::From(script_state);
+diff --git a/third_party/blink/renderer/modules/video_rvfc/video_frame_callback_requester_impl.cc b/third_party/blink/renderer/modules/video_rvfc/video_frame_callback_requester_impl.cc
+index 769a70e416..0979346310 100644
+--- a/third_party/blink/renderer/modules/video_rvfc/video_frame_callback_requester_impl.cc
++++ b/third_party/blink/renderer/modules/video_rvfc/video_frame_callback_requester_impl.cc
+@@ -316,7 +316,9 @@ double VideoFrameCallbackRequesterImpl::GetClampedTimeInMillis(
+ // static
+ double VideoFrameCallbackRequesterImpl::GetCoarseClampedTimeInSeconds(
+     base::TimeDelta time) {
+-  constexpr auto kCoarseResolution = base::Microseconds(100);
++  // [MoCi fp-24] bumped 100us->1000us to match TimeClamper coarsening; still
++  // finer than video frame interval (60fps=16.67ms), no perceptible impact.
++  constexpr auto kCoarseResolution = base::Microseconds(1000);
+   // Add this assert, in case TimeClamper's resolution were to change to be
+   // stricter.
+   static_assert(

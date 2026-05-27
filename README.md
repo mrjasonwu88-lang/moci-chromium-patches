@@ -4,7 +4,7 @@
 
 ## 内容
 
-`patches/moci-v3/` — 6 个 patches，覆盖 22 个 chromium 源文件 + 2 个新文件，共 ~1850 行：
+`patches/moci-v3/` — 7 个 patches，覆盖 25 个 chromium 源文件 + 2 个新文件，共 ~1910 行：
 
 | Patch | 行数 | 功能 |
 |---|---|---|
@@ -14,6 +14,7 @@
 | `moci-blink-disable.patch` | 315 | fp-09 webdriver=false + fp-12 mediaDevices + fp-13 speech + fp-19 battery + fp-20 bluetooth + fp-21 permissions + fp-29 storage quota + fp-32 maxTouchPoints + fp-34 PressureObserver/IdleDetector |
 | `moci-network-spoof.patch` | 207 | fp-14 Client Hints + fp-16 timezone + fp-22 navigator.connection |
 | `moci-phase3-brand.patch` | 285 | BRANDING + chromium_strings.grd (魔词浏览器 / 魔词) + version.py UTF-8 fix |
+| `moci-fp24-perf-precision.patch` | 56 | fp-24 Performance.now() 1ms / 0.1ms 粗化 + performance.memory 强制 bucketized — 抵 WASM 编译时间指纹 / V8 heap 探测 |
 
 ## 应用
 
