@@ -4,7 +4,7 @@
 
 ## 内容
 
-`patches/moci-v3/` — 9 个 patches，覆盖 27 个 chromium 源文件 + 2 个新文件，共 ~2050 行。
+`patches/moci-v3/` — 9 个 patches，**模式 B JSON-driven**：用户在 Electron 客户端 UI 配的 navigator/screen/webgl/connection/clientHints 等字段，chrome.exe **精确生效**（不再是从硬编码 pool 派生）。架构上 MoCiFingerprintConfig 提到 //components/moci/ 让 blink/components 各层都能读 JSON 字段。验证：14 个字段 100% 精确匹配 UI 配置。共 ~2530 行。
 
 外加 `assets/logo/` — 11 个二进制 logo 资源（ui-03 品牌图标，详见该目录 README）。
 

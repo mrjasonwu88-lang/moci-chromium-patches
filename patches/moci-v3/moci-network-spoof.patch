@@ -1,78 +1,3 @@
-diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b/third_party/blink/renderer/modules/netinfo/network_information.cc
-index 976a3c8c36..67313305bd 100644
---- a/third_party/blink/renderer/modules/netinfo/network_information.cc
-+++ b/third_party/blink/renderer/modules/netinfo/network_information.cc
-@@ -6,7 +6,11 @@
- 
- #include <algorithm>
- 
-+#include "base/command_line.h"
-+#include "base/files/file_path.h"
- #include "base/time/time.h"
-+
-+#include <functional>
- #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
- #include "third_party/blink/public/platform/task_type.h"
- #include "third_party/blink/renderer/bindings/modules/v8/v8_connection_type.h"
-@@ -110,7 +114,34 @@ double NetworkInformation::downlinkMax() const {
-   return downlink_max_mbps_;
- }
- 
-+namespace {
-+
-+// MoCi fp-22: per-env spoof of NetworkInformation (effectiveType / rtt / downlink)
-+// pulled from --fingerprint-config path hash so each environment looks like
-+// a different network connection.
-+bool MoCiNetSpoof(uint64_t* out_seed) {
-+  auto* cmd = base::CommandLine::ForCurrentProcess();
-+  if (!cmd || !cmd->HasSwitch("fingerprint-config")) return false;
-+  auto p = cmd->GetSwitchValuePath("fingerprint-config");
-+  if (p.empty()) return false;
-+  *out_seed = static_cast<uint64_t>(
-+      std::hash<base::FilePath::StringType>{}(p.value()));
-+  return true;
-+}
-+
-+}  // namespace
-+
- V8EffectiveConnectionType NetworkInformation::effectiveType() {
-+  uint64_t s;
-+  if (MoCiNetSpoof(&s)) {
-+    static const V8EffectiveConnectionType::Enum kPool[] = {
-+      V8EffectiveConnectionType::Enum::k4G,
-+      V8EffectiveConnectionType::Enum::k4G,
-+      V8EffectiveConnectionType::Enum::k3G,
-+      V8EffectiveConnectionType::Enum::k4G,
-+    };
-+    return V8EffectiveConnectionType(kPool[s % std::size(kPool)]);
-+  }
-   MaybeShowWebHoldbackConsoleMsg();
-   std::optional<WebEffectiveConnectionType> override_ect =
-       GetNetworkStateNotifier().GetWebHoldbackEffectiveType();
-@@ -132,6 +163,11 @@ V8EffectiveConnectionType NetworkInformation::effectiveType() {
- }
- 
- uint32_t NetworkInformation::rtt() {
-+  uint64_t s;
-+  if (MoCiNetSpoof(&s)) {
-+    // Round to 25ms per spec (https://wicg.github.io/netinfo/#round-the-round-trip-time)
-+    return static_cast<uint32_t>(50 + (s % 6) * 25);  // 50-175ms
-+  }
-   MaybeShowWebHoldbackConsoleMsg();
-   std::optional<base::TimeDelta> override_rtt =
-       GetNetworkStateNotifier().GetWebHoldbackHttpRtt();
-@@ -148,6 +184,11 @@ uint32_t NetworkInformation::rtt() {
- }
- 
- double NetworkInformation::downlink() {
-+  uint64_t s;
-+  if (MoCiNetSpoof(&s)) {
-+    // Multiples of 0.05 Mbps per spec
-+    return 1.0 + ((s >> 8) % 200) * 0.05;  // 1.0-11.0 Mbps
-+  }
-   MaybeShowWebHoldbackConsoleMsg();
-   std::optional<double> override_downlink_mbps =
-       GetNetworkStateNotifier().GetWebHoldbackDownlinkThroughputMbps();
 diff --git a/base/i18n/icu_util.cc b/base/i18n/icu_util.cc
 index 6e6e12089d..4853233247 100644
 --- a/base/i18n/icu_util.cc
@@ -136,20 +61,34 @@ index 6e6e12089d..4853233247 100644
  #if BUILDFLAG(IS_FUCHSIA)
    // The platform-specific mechanisms used by ICU's detectHostTimeZone() to
    // determine the default time zone will not work on Fuchsia. Therefore,
+diff --git a/components/embedder_support/BUILD.gn b/components/embedder_support/BUILD.gn
+index 847ba42327..f669d08478 100644
+--- a/components/embedder_support/BUILD.gn
++++ b/components/embedder_support/BUILD.gn
+@@ -58,6 +58,7 @@ static_library("user_agent") {
+   deps = [
+     ":embedder_support",
+     "//build:branding_buildflags",
++    "//components/moci:fingerprint_config",  # [MoCi fp-14 B] read navigator.platform from JSON
+     "//components/policy/core/common",
+     "//components/prefs",
+     "//components/version_info",
 diff --git a/components/embedder_support/user_agent_utils.cc b/components/embedder_support/user_agent_utils.cc
-index 557eadb182..310e25b45a 100644
+index 557eadb182..70a0f8aad3 100644
 --- a/components/embedder_support/user_agent_utils.cc
 +++ b/components/embedder_support/user_agent_utils.cc
-@@ -14,6 +14,8 @@
+@@ -14,7 +14,10 @@
  
  #include "base/android/device_info.h"
  #include "base/command_line.h"
 +#include "base/files/file_path.h"
 +#include <functional>
  #include "base/compiler_specific.h"
++#include "components/moci/fingerprint_config.h"
  #include "base/feature_list.h"
  #include "base/logging.h"
-@@ -195,6 +197,8 @@ const blink::UserAgentBrandList GetUserAgentBrandMajorVersionListInternal(
+ #include "base/no_destructor.h"
+@@ -195,6 +198,8 @@ const blink::UserAgentBrandList GetUserAgentBrandMajorVersionListInternal(
  // It helps us avoid introducing individual enterprise policy controls for
  // sending unified platform for the user agent string.
  bool ShouldSendUserAgentUnifiedPlatform() {
@@ -158,7 +97,7 @@ index 557eadb182..310e25b45a 100644
    return base::FeatureList::IsEnabled(
        blink::features::kReduceUserAgentMinorVersion);
  }
-@@ -636,6 +640,8 @@ std::string GetPlatformForUAMetadata() {
+@@ -636,6 +641,8 @@ std::string GetPlatformForUAMetadata() {
  }
  
  blink::UserAgentMetadata GetUserAgentMetadata(bool only_low_entropy_ch) {
@@ -167,41 +106,192 @@ index 557eadb182..310e25b45a 100644
    blink::UserAgentMetadata metadata;
  
    // Low entropy client hints.
-@@ -671,6 +677,37 @@ blink::UserAgentMetadata GetUserAgentMetadata(bool only_low_entropy_ch) {
+@@ -671,6 +678,85 @@ blink::UserAgentMetadata GetUserAgentMetadata(bool only_low_entropy_ch) {
    metadata.bitness = GetCpuBitness();
    metadata.wow64 = IsWoW64();
    metadata.platform_version = GetPlatformVersion();
 +
-+  // MoCi fp-14: per-env spoof of Sec-CH-UA-Platform and Sec-CH-UA-Platform-Version
-+  // so cross-platform multi-account looks like different OS / OS version.
-+  // Mobile bit forced false (desktop) matches fp-32 maxTouchPoints=0.
-+  if (auto* cmd = base::CommandLine::ForCurrentProcess();
-+      cmd && cmd->HasSwitch("fingerprint-config")) {
-+    auto p = cmd->GetSwitchValuePath("fingerprint-config");
-+    if (!p.empty()) {
-+      struct PlatPool { const char* platform; const char* version; const char* architecture; };
-+      static const PlatPool kPool[] = {
-+        {"Windows", "10.0.0",  "x86"},
-+        {"Windows", "15.0.0",  "x86"},  // Windows 11
-+        {"Windows", "15.0.0",  "x86"},
-+        {"macOS",   "14.3.0",  "arm"},
-+        {"macOS",   "13.5.0",  "x86"},
-+        {"Linux",   "",        "x86"},
-+        {"Windows", "10.0.0",  "x86"},
-+        {"Windows", "15.0.0",  "x86"},
-+      };
-+      auto seed = std::hash<base::FilePath::StringType>{}(p.value());
-+      const auto& pick = kPool[seed % std::size(kPool)];
-+      metadata.platform = pick.platform;
-+      metadata.platform_version = pick.version;
-+      metadata.architecture = pick.architecture;
-+      metadata.mobile = false;
++  // [MoCi fp-14 B] read Sec-CH-UA-Platform / Platform-Version / Architecture
++  // from JSON clientHints.* (preferred) or navigator.platform mapping.
++  // Fallback: pool by path-hash.
++  bool applied = false;
++  {
++    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++    if (auto* ch = dict.FindDict("clientHints")) {
++      if (const std::string* v = ch->FindString("platform")) {
++        metadata.platform = *v;
++        applied = true;
++      }
++      if (const std::string* v = ch->FindString("platformVersion")) {
++        metadata.platform_version = *v;
++        applied = true;
++      }
++      if (const std::string* v = ch->FindString("architecture")) {
++        metadata.architecture = *v;
++      }
++      if (auto mobile = ch->FindBool("mobile")) {
++        metadata.mobile = *mobile;
++      } else {
++        metadata.mobile = false;
++      }
++      if (const std::string* v = ch->FindString("bitness")) {
++        metadata.bitness = *v;
++      } else {
++        metadata.bitness = "64";
++      }
 +      metadata.wow64 = false;
-+      metadata.bitness = "64";
-+      metadata.model = "";  // empty per HTTPWG recommendation for desktop
++      metadata.model = "";
++    }
++    // Also accept simpler navigator.platform mapping if clientHints absent.
++    if (!applied) {
++      if (auto* nav = dict.FindDict("navigator")) {
++        if (const std::string* plat = nav->FindString("platform")) {
++          // Map navigator.platform string -> Sec-CH-UA-Platform.
++          if (plat->find("Win") != std::string::npos) metadata.platform = "Windows";
++          else if (plat->find("Mac") != std::string::npos) metadata.platform = "macOS";
++          else if (plat->find("Linux") != std::string::npos) metadata.platform = "Linux";
++          else metadata.platform = *plat;
++          applied = true;
++          metadata.mobile = false;
++          metadata.bitness = "64";
++          metadata.wow64 = false;
++          metadata.model = "";
++        }
++      }
++    }
++  }
++  if (!applied) {
++    if (auto* cmd = base::CommandLine::ForCurrentProcess();
++        cmd && cmd->HasSwitch("fingerprint-config")) {
++      auto p = cmd->GetSwitchValuePath("fingerprint-config");
++      if (!p.empty()) {
++        struct PlatPool { const char* platform; const char* version; const char* architecture; };
++        static const PlatPool kPool[] = {
++          {"Windows", "10.0.0",  "x86"},
++          {"Windows", "15.0.0",  "x86"},  // Windows 11
++          {"Windows", "15.0.0",  "x86"},
++          {"macOS",   "14.3.0",  "arm"},
++          {"macOS",   "13.5.0",  "x86"},
++          {"Linux",   "",        "x86"},
++          {"Windows", "10.0.0",  "x86"},
++          {"Windows", "15.0.0",  "x86"},
++        };
++        auto seed = std::hash<base::FilePath::StringType>{}(p.value());
++        const auto& pick = kPool[seed % std::size(kPool)];
++        metadata.platform = pick.platform;
++        metadata.platform_version = pick.version;
++        metadata.architecture = pick.architecture;
++        metadata.mobile = false;
++        metadata.wow64 = false;
++        metadata.bitness = "64";
++        metadata.model = "";  // empty per HTTPWG recommendation for desktop
++      }
 +    }
 +  }
 +
    return metadata;
  }
  
+diff --git a/third_party/blink/renderer/modules/netinfo/network_information.cc b/third_party/blink/renderer/modules/netinfo/network_information.cc
+index 976a3c8c36..a4681d0e1e 100644
+--- a/third_party/blink/renderer/modules/netinfo/network_information.cc
++++ b/third_party/blink/renderer/modules/netinfo/network_information.cc
+@@ -6,7 +6,12 @@
+ 
+ #include <algorithm>
+ 
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "base/time/time.h"
++#include "components/moci/fingerprint_config.h"
++
++#include <functional>
+ #include "third_party/blink/public/mojom/devtools/console_message.mojom-blink.h"
+ #include "third_party/blink/public/platform/task_type.h"
+ #include "third_party/blink/renderer/bindings/modules/v8/v8_connection_type.h"
+@@ -110,7 +115,46 @@ double NetworkInformation::downlinkMax() const {
+   return downlink_max_mbps_;
+ }
+ 
++namespace {
++
++// MoCi fp-22: per-env spoof of NetworkInformation (effectiveType / rtt / downlink)
++// pulled from --fingerprint-config path hash so each environment looks like
++// a different network connection.
++bool MoCiNetSpoof(uint64_t* out_seed) {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) return false;
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) return false;
++  *out_seed = static_cast<uint64_t>(
++      std::hash<base::FilePath::StringType>{}(p.value()));
++  return true;
++}
++
++}  // namespace
++
+ V8EffectiveConnectionType NetworkInformation::effectiveType() {
++  // [MoCi fp-22 B] connection.effectiveType from JSON (string: "4g"/"3g"/"2g"/"slow-2g").
++  {
++    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++    if (auto* conn = dict.FindDict("connection")) {
++      if (const std::string* et = conn->FindString("effectiveType")) {
++        if (*et == "4g") return V8EffectiveConnectionType(V8EffectiveConnectionType::Enum::k4G);
++        if (*et == "3g") return V8EffectiveConnectionType(V8EffectiveConnectionType::Enum::k3G);
++        if (*et == "2g") return V8EffectiveConnectionType(V8EffectiveConnectionType::Enum::k2G);
++        if (*et == "slow-2g") return V8EffectiveConnectionType(V8EffectiveConnectionType::Enum::kSlow2G);
++      }
++    }
++  }
++  uint64_t s;
++  if (MoCiNetSpoof(&s)) {
++    static const V8EffectiveConnectionType::Enum kPool[] = {
++      V8EffectiveConnectionType::Enum::k4G,
++      V8EffectiveConnectionType::Enum::k4G,
++      V8EffectiveConnectionType::Enum::k3G,
++      V8EffectiveConnectionType::Enum::k4G,
++    };
++    return V8EffectiveConnectionType(kPool[s % std::size(kPool)]);
++  }
+   MaybeShowWebHoldbackConsoleMsg();
+   std::optional<WebEffectiveConnectionType> override_ect =
+       GetNetworkStateNotifier().GetWebHoldbackEffectiveType();
+@@ -132,6 +176,18 @@ V8EffectiveConnectionType NetworkInformation::effectiveType() {
+ }
+ 
+ uint32_t NetworkInformation::rtt() {
++  // [MoCi fp-22 B] connection.rtt from JSON (ms).
++  {
++    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++    if (auto* conn = dict.FindDict("connection")) {
++      if (auto v = conn->FindInt("rtt")) return static_cast<uint32_t>(*v);
++    }
++  }
++  uint64_t s;
++  if (MoCiNetSpoof(&s)) {
++    // Round to 25ms per spec (https://wicg.github.io/netinfo/#round-the-round-trip-time)
++    return static_cast<uint32_t>(50 + (s % 6) * 25);  // 50-175ms
++  }
+   MaybeShowWebHoldbackConsoleMsg();
+   std::optional<base::TimeDelta> override_rtt =
+       GetNetworkStateNotifier().GetWebHoldbackHttpRtt();
+@@ -148,6 +204,19 @@ uint32_t NetworkInformation::rtt() {
+ }
+ 
+ double NetworkInformation::downlink() {
++  // [MoCi fp-22 B] connection.downlink from JSON (Mbps).
++  {
++    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++    if (auto* conn = dict.FindDict("connection")) {
++      if (auto v = conn->FindDouble("downlink")) return *v;
++      if (auto v = conn->FindInt("downlink")) return static_cast<double>(*v);
++    }
++  }
++  uint64_t s;
++  if (MoCiNetSpoof(&s)) {
++    // Multiples of 0.05 Mbps per spec
++    return 1.0 + ((s >> 8) % 200) * 0.05;  // 1.0-11.0 Mbps
++  }
+   MaybeShowWebHoldbackConsoleMsg();
+   std::optional<double> override_downlink_mbps =
+       GetNetworkStateNotifier().GetWebHoldbackDownlinkThroughputMbps();

@@ -1,12 +1,12 @@
 diff --git a/chrome/app/chrome_main_delegate.cc b/chrome/app/chrome_main_delegate.cc
-index d683cdd958..64d00581be 100644
+index d683cdd958..6b2caa0a84 100644
 --- a/chrome/app/chrome_main_delegate.cc
 +++ b/chrome/app/chrome_main_delegate.cc
 @@ -57,6 +57,7 @@
  #include "chrome/common/chrome_switches.h"
  #include "chrome/common/crash_keys.h"
  #include "chrome/common/logging_chrome.h"
-+#include "chrome/common/moci/fingerprint_config.h"
++#include "components/moci/fingerprint_config.h"
  #include "chrome/common/profiler/chrome_thread_group_profiler_client.h"
  #include "chrome/common/profiler/chrome_thread_profiler_client.h"
  #include "chrome/common/profiler/core_unwinders.h"
@@ -170,7 +170,7 @@ index f823433796..87eff66cef 100644
    return !site_familiarity_user_data ||
           site_familiarity_user_data->is_site_familiar();
 diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
-index 1a692fe440..67f2fcbe5c 100644
+index 1a692fe440..fcafd55d15 100644
 --- a/chrome/common/BUILD.gn
 +++ b/chrome/common/BUILD.gn
 @@ -120,7 +120,6 @@ source_set("request_code_constants") {
@@ -189,16 +189,15 @@ index 1a692fe440..67f2fcbe5c 100644
  
      public_deps += [
        "//components/dom_distiller/core",  # Needed by chrome_content_client.cc.
-@@ -449,6 +447,8 @@ static_library("non_code_constants") {
-     "chrome_constants.h",
-     "chrome_switches.cc",
-     "chrome_switches.h",
-+    "moci/fingerprint_config.cc",
-+    "moci/fingerprint_config.h",
-     "env_vars.h",
+@@ -457,6 +455,7 @@ static_library("non_code_constants") {
+     ":buildflags",
+     ":version_header",
+     "//base",
++    "//components/moci:fingerprint_config",  # [MoCi B] expose MoCiFingerprintConfig
+     "//content/public/common:buildflags",
    ]
-   configs += [ "//build/config/compiler:wexit_time_destructors" ]
-@@ -531,6 +531,7 @@ static_library("url_constants") {
+ 
+@@ -531,6 +530,7 @@ static_library("url_constants") {
      "//components/optimization_guide/optimization_guide_internals/webui:url_constants",
      "//components/password_manager/content/common",
      "//components/safe_browsing/core/common",

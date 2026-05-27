@@ -1,3 +1,36 @@
+diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
+index a57561775c..c9240ac424 100644
+--- a/third_party/blink/renderer/core/events/navigator_events.cc
++++ b/third_party/blink/renderer/core/events/navigator_events.cc
+@@ -30,6 +30,8 @@
+ 
+ #include "third_party/blink/renderer/core/events/navigator_events.h"
+ 
++#include "base/command_line.h"
++#include "components/moci/fingerprint_config.h"
+ #include "third_party/blink/renderer/core/frame/local_dom_window.h"
+ #include "third_party/blink/renderer/core/frame/local_frame.h"
+ #include "third_party/blink/renderer/core/frame/navigator.h"
+@@ -38,6 +40,19 @@
+ namespace blink {
+ 
+ int32_t NavigatorEvents::maxTouchPoints(Navigator& navigator) {
++  // [MoCi fp-32 B] navigator.maxTouchPoints from JSON (allow non-zero for
++  // touch device emulation). Fallback: force 0 (desktop) when JSON loaded
++  // but field missing; real device value otherwise.
++  auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++  if (auto* nav = dict.FindDict("navigator")) {
++    if (auto v = nav->FindInt("maxTouchPoints")) {
++      return static_cast<int32_t>(*v);
++    }
++  }
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    return 0;
++  }
+   LocalDOMWindow* window = navigator.DomWindow();
+   return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
+ }
 diff --git a/third_party/blink/renderer/core/frame/navigator.cc b/third_party/blink/renderer/core/frame/navigator.cc
 index 583f05f8dd..f2925411a1 100644
 --- a/third_party/blink/renderer/core/frame/navigator.cc
@@ -32,33 +65,6 @@ index 583f05f8dd..f2925411a1 100644
  }
  
  String Navigator::GetAcceptLanguages() {
-diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
-index 2327015bc5..1a9caf4c44 100644
---- a/third_party/blink/renderer/modules/speech/speech_synthesis.cc
-+++ b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
-@@ -27,6 +27,7 @@
- 
- #include <tuple>
- 
-+#include "base/command_line.h"
- #include "build/build_config.h"
- #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
- #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
-@@ -96,6 +97,14 @@ void SpeechSynthesis::OnSetVoiceList(
- }
- 
- const HeapVector<Member<SpeechSynthesisVoice>>& SpeechSynthesis::getVoices() {
-+  // MoCi fp-13: when --fingerprint-config is set, never fetch the system voice
-+  // list. voice_list_ stays empty so fingerprinters can't use installed-voices
-+  // as a per-machine signature. Sites that need TTS will see "no voices" same
-+  // as a fresh OS install — acceptable for cross-border seller workflows.
-+  if (auto* cmd = base::CommandLine::ForCurrentProcess();
-+      cmd && cmd->HasSwitch("fingerprint-config")) {
-+    return voice_list_;
-+  }
-   // Kick off initialization here to ensure voice list gets populated.
-   std::ignore = TryEnsureMojomSynthesis();
-   return voice_list_;
 diff --git a/third_party/blink/renderer/modules/battery/battery_manager.cc b/third_party/blink/renderer/modules/battery/battery_manager.cc
 index 51cdc75cee..aa326148be 100644
 --- a/third_party/blink/renderer/modules/battery/battery_manager.cc
@@ -119,32 +125,6 @@ index 4bf4df11b2..e6b8c7186d 100644
    LocalDOMWindow* window = GetSupplementable()->DomWindow();
  
    if (IsRequestDenied(window, exception_state)) {
-diff --git a/third_party/blink/renderer/core/events/navigator_events.cc b/third_party/blink/renderer/core/events/navigator_events.cc
-index a57561775c..1b61a282a2 100644
---- a/third_party/blink/renderer/core/events/navigator_events.cc
-+++ b/third_party/blink/renderer/core/events/navigator_events.cc
-@@ -30,6 +30,7 @@
- 
- #include "third_party/blink/renderer/core/events/navigator_events.h"
- 
-+#include "base/command_line.h"
- #include "third_party/blink/renderer/core/frame/local_dom_window.h"
- #include "third_party/blink/renderer/core/frame/local_frame.h"
- #include "third_party/blink/renderer/core/frame/navigator.h"
-@@ -38,6 +39,13 @@
- namespace blink {
- 
- int32_t NavigatorEvents::maxTouchPoints(Navigator& navigator) {
-+  // MoCi fp-32: force maxTouchPoints=0 (desktop, no touch) under fingerprint
-+  // config. Spec-valid for desktop browsers and removes a high-cardinality
-+  // fingerprint signal (touch device count varies wildly between hardware).
-+  if (auto* cmd = base::CommandLine::ForCurrentProcess();
-+      cmd && cmd->HasSwitch("fingerprint-config")) {
-+    return 0;
-+  }
-   LocalDOMWindow* window = navigator.DomWindow();
-   return window ? window->GetFrame()->GetSettings()->GetMaxTouchPoints() : 0;
- }
 diff --git a/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc b/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc
 index ea2db8e128..89d362b613 100644
 --- a/third_party/blink/renderer/modules/compute_pressure/pressure_observer.cc
@@ -197,36 +177,6 @@ index d2807edd83..dc28581eb7 100644
    if (!GetExecutionContext() || GetExecutionContext()->IsContextDestroyed()) {
      exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
                                        "Execution context is detached.");
-diff --git a/third_party/blink/renderer/modules/permissions/permissions.cc b/third_party/blink/renderer/modules/permissions/permissions.cc
-index 378eaa2bde..a2135d2aed 100644
---- a/third_party/blink/renderer/modules/permissions/permissions.cc
-+++ b/third_party/blink/renderer/modules/permissions/permissions.cc
-@@ -7,6 +7,7 @@
- #include <memory>
- #include <utility>
- 
-+#include "base/command_line.h"
- #include "base/metrics/histogram_functions.h"
- #include "third_party/blink/public/common/permissions/permission_utils.h"
- #include "third_party/blink/public/mojom/page/page.mojom-blink.h"
-@@ -119,6 +120,17 @@ ScriptPromise<PermissionStatus> Permissions::query(
-           script_state, exception_state.GetContext());
-   auto promise = resolver->Promise();
- 
-+  // MoCi fp-21: when --fingerprint-config is set, always return ASK (=prompt)
-+  // for any permission query. Hides the user's actual permission state
-+  // (a high-entropy signal for fingerprinters that probe N permissions).
-+  if (auto* cmd = base::CommandLine::ForCurrentProcess();
-+      cmd && cmd->HasSwitch("fingerprint-config")) {
-+    PermissionDescriptorPtr desc_copy = descriptor->Clone();
-+    TaskComplete(resolver, std::move(desc_copy),
-+                 mojom::blink::PermissionStatus::ASK);
-+    return promise;
-+  }
-+
-   // If the current origin is a file scheme, it will unlikely return a
-   // meaningful value because most APIs are broken on file scheme and no
-   // permission prompt will be shown even if the returned permission will most
 diff --git a/third_party/blink/renderer/modules/mediastream/media_devices.cc b/third_party/blink/renderer/modules/mediastream/media_devices.cc
 index 18855d9d71..4c989811ae 100644
 --- a/third_party/blink/renderer/modules/mediastream/media_devices.cc
@@ -267,11 +217,41 @@ index 18855d9d71..4c989811ae 100644
    ReportCompletedEnumerateDevices(result_contains_nonempty_input_device_ids);
    result_tracker->Resolve(media_devices);
    tracer->End();
+diff --git a/third_party/blink/renderer/modules/permissions/permissions.cc b/third_party/blink/renderer/modules/permissions/permissions.cc
+index 378eaa2bde..a2135d2aed 100644
+--- a/third_party/blink/renderer/modules/permissions/permissions.cc
++++ b/third_party/blink/renderer/modules/permissions/permissions.cc
+@@ -7,6 +7,7 @@
+ #include <memory>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "third_party/blink/public/common/permissions/permission_utils.h"
+ #include "third_party/blink/public/mojom/page/page.mojom-blink.h"
+@@ -119,6 +120,17 @@ ScriptPromise<PermissionStatus> Permissions::query(
+           script_state, exception_state.GetContext());
+   auto promise = resolver->Promise();
+ 
++  // MoCi fp-21: when --fingerprint-config is set, always return ASK (=prompt)
++  // for any permission query. Hides the user's actual permission state
++  // (a high-entropy signal for fingerprinters that probe N permissions).
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    PermissionDescriptorPtr desc_copy = descriptor->Clone();
++    TaskComplete(resolver, std::move(desc_copy),
++                 mojom::blink::PermissionStatus::ASK);
++    return promise;
++  }
++
+   // If the current origin is a file scheme, it will unlikely return a
+   // meaningful value because most APIs are broken on file scheme and no
+   // permission prompt will be shown even if the returned permission will most
 diff --git a/third_party/blink/renderer/modules/quota/storage_manager.cc b/third_party/blink/renderer/modules/quota/storage_manager.cc
-index ef1c723ac2..1f34547fec 100644
+index ef1c723ac2..856341926c 100644
 --- a/third_party/blink/renderer/modules/quota/storage_manager.cc
 +++ b/third_party/blink/renderer/modules/quota/storage_manager.cc
-@@ -4,6 +4,10 @@
+@@ -4,6 +4,11 @@
  
  #include "third_party/blink/renderer/modules/quota/storage_manager.h"
  
@@ -279,15 +259,27 @@ index ef1c723ac2..1f34547fec 100644
 +
 +#include "base/command_line.h"
 +#include "base/files/file_path.h"
++#include "components/moci/fingerprint_config.h"
  #include "mojo/public/cpp/bindings/callback_helpers.h"
  #include "third_party/blink/public/mojom/permissions/permission_status.mojom-blink.h"
  #include "third_party/blink/public/mojom/quota/quota_types.mojom-blink.h"
-@@ -169,6 +173,30 @@ ScriptPromise<StorageEstimate> StorageManager::estimate(
+@@ -169,6 +174,41 @@ ScriptPromise<StorageEstimate> StorageManager::estimate(
        script_state, exception_state.GetContext());
    auto promise = resolver->Promise();
  
-+  // MoCi fp-29: spoof storage.estimate() quota to common disk sizes (no usage)
-+  // so real disk free space + actual app data don't leak as fingerprint.
++  // [MoCi fp-29 B] storage.estimate() quota — read storage.quotaGB from JSON
++  // (in GB; converted to bytes). Fallback: per-env pool.
++  {
++    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
++    if (auto* st = dict.FindDict("storage")) {
++      if (auto v = st->FindInt("quotaGB")) {
++        int64_t bytes = static_cast<int64_t>(*v) * 1024LL * 1024 * 1024;
++        QueryStorageUsageAndQuotaCallback(
++            resolver, mojom::blink::QuotaStatusCode::kOk, 0, bytes, nullptr);
++        return promise;
++      }
++    }
++  }
 +  if (auto* cmd = base::CommandLine::ForCurrentProcess();
 +      cmd && cmd->HasSwitch("fingerprint-config")) {
 +    auto p = cmd->GetSwitchValuePath("fingerprint-config");
@@ -313,3 +305,30 @@ index ef1c723ac2..1f34547fec 100644
    auto callback = resolver->WrapCallbackInScriptScope(
        BindOnce(&QueryStorageUsageAndQuotaCallback));
    GetQuotaHost(execution_context)
+diff --git a/third_party/blink/renderer/modules/speech/speech_synthesis.cc b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+index 2327015bc5..1a9caf4c44 100644
+--- a/third_party/blink/renderer/modules/speech/speech_synthesis.cc
++++ b/third_party/blink/renderer/modules/speech/speech_synthesis.cc
+@@ -27,6 +27,7 @@
+ 
+ #include <tuple>
+ 
++#include "base/command_line.h"
+ #include "build/build_config.h"
+ #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
+ #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
+@@ -96,6 +97,14 @@ void SpeechSynthesis::OnSetVoiceList(
+ }
+ 
+ const HeapVector<Member<SpeechSynthesisVoice>>& SpeechSynthesis::getVoices() {
++  // MoCi fp-13: when --fingerprint-config is set, never fetch the system voice
++  // list. voice_list_ stays empty so fingerprinters can't use installed-voices
++  // as a per-machine signature. Sites that need TTS will see "no voices" same
++  // as a fresh OS install — acceptable for cross-border seller workflows.
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    return voice_list_;
++  }
+   // Kick off initialization here to ensure voice list gets populated.
+   std::ignore = TryEnsureMojomSynthesis();
+   return voice_list_;
