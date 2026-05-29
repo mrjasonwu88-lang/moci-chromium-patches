@@ -269,13 +269,18 @@ index ef1c723ac2..856341926c 100644
  
 +  // [MoCi fp-29 B] storage.estimate() quota — read storage.quotaGB from JSON
 +  // (in GB; converted to bytes). Fallback: per-env pool.
++  // 2026-05-29 修复：callback 第 5 参 UsageBreakdownPtr 不能传 nullptr，
++  // 否则 QueryStorageUsageAndQuotaCallback 内部 `usage_breakdown->indexedDatabase`
++  // 立刻 deref null 让渲染进程崩 (whoer.net/amiunique.org 实测复现)。
++  // 必须传 UsageBreakdown::New() 零初始化对象让 callback 内部 if 检查走 false 分支。
 +  {
 +    auto& dict = moci::MoCiFingerprintConfig::Get().GetDict();
 +    if (auto* st = dict.FindDict("storage")) {
 +      if (auto v = st->FindInt("quotaGB")) {
 +        int64_t bytes = static_cast<int64_t>(*v) * 1024LL * 1024 * 1024;
 +        QueryStorageUsageAndQuotaCallback(
-+            resolver, mojom::blink::QuotaStatusCode::kOk, 0, bytes, nullptr);
++            resolver, mojom::blink::QuotaStatusCode::kOk, 0, bytes,
++            mojom::blink::UsageBreakdown::New());
 +        return promise;
 +      }
 +    }
@@ -297,7 +302,8 @@ index ef1c723ac2..856341926c 100644
 +      auto seed = std::hash<base::FilePath::StringType>{}(p.value());
 +      QueryStorageUsageAndQuotaCallback(
 +          resolver, mojom::blink::QuotaStatusCode::kOk, 0,
-+          kQuotaPool[seed % std::size(kQuotaPool)], nullptr);
++          kQuotaPool[seed % std::size(kQuotaPool)],
++          mojom::blink::UsageBreakdown::New());
 +      return promise;
 +    }
 +  }
