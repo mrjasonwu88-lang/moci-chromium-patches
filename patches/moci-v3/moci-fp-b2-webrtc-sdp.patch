@@ -1,0 +1,90 @@
+diff --git a/p2p/BUILD.gn b/p2p/BUILD.gn
+index 344d127..40adf0b 100644
+--- a/p2p/BUILD.gn
++++ b/p2p/BUILD.gn
+@@ -383,6 +383,8 @@ rtc_library("ice_credentials_iterator") {
+     ":p2p_constants",
+     ":transport_description",
+     "../rtc_base:crypto_random",
++    # [MoCi fp-B2] base::CommandLine 读 --fingerprint-config 派生 ICE 凭证
++    "//base",
+   ]
+ }
+ 
+diff --git a/p2p/base/ice_credentials_iterator.cc b/p2p/base/ice_credentials_iterator.cc
+index d024641..a95485f 100644
+--- a/p2p/base/ice_credentials_iterator.cc
++++ b/p2p/base/ice_credentials_iterator.cc
+@@ -10,14 +10,76 @@
+ 
+ #include "p2p/base/ice_credentials_iterator.h"
+ 
++#include <functional>
++#include <string>
+ #include <vector>
+ 
++#include "base/command_line.h"
++#include "base/files/file_path.h"
+ #include "p2p/base/p2p_constants.h"
+ #include "p2p/base/transport_description.h"
+ #include "rtc_base/crypto_random.h"
+ 
+ namespace webrtc {
+ 
++namespace {
++
++// [MoCi fp-B2] Per-env deterministic ICE credentials.
++// CreepJS / fingerprintjs etc. read SDP a=ice-ufrag: and use the value as a
++// browser-instance correlate. Default WebRTC `CreateRandomString(4)` makes
++// every PeerConnection unique; we want same env → same ufrag prefix so
++// multi-tab sessions in the same fingerprint env look consistent, while still
++// keeping enough entropy in ICE pwd to satisfy ICE STUN integrity check.
++//
++// Strategy:
++//   ufrag (4 chars): full deterministic — `b64[hash(envId, "ufrag") % 64^4]`.
++//     Acceptable because ufrag is a session-local correlate, not a secret.
++//   pwd (24 chars): first 8 chars deterministic per env (fingerprint signal),
++//     last 16 chars cryptographically random (ICE STUN integrity).
++//
++// If --fingerprint-config switch is absent, fall through to original behavior.
++
++constexpr char kBase64[] =
++    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
++    "abcdefghijklmnopqrstuvwxyz0123456789+/";
++
++std::string MoCiHashStr(const std::string& seed, int len) {
++  // Simple FNV-1a 64-bit, expand into base64 chars by 6-bit windows.
++  uint64_t h = 0xcbf29ce484222325ULL;
++  for (char c : seed) {
++    h ^= static_cast<uint8_t>(c);
++    h *= 0x100000001b3ULL;
++  }
++  std::string out;
++  out.reserve(len);
++  for (int i = 0; i < len; ++i) {
++    // Re-mix and take 6 bits each iteration.
++    h ^= (h >> 33);
++    h *= 0xff51afd7ed558ccdULL;
++    out.push_back(kBase64[(h >> (i * 5)) & 0x3f]);
++  }
++  return out;
++}
++
++bool TryMoCiCredentials(std::string* ufrag, std::string* pwd) {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) return false;
++  auto p = cmd->GetSwitchValuePath("fingerprint-config");
++  if (p.empty()) return false;
++  // Use the path string itself as the env seed — it embeds envId and the
++  // chromium process inherits the same fingerprint-config across child procs.
++  std::string seed(p.AsUTF8Unsafe());
++  *ufrag = MoCiHashStr(seed + "::ufrag", ICE_UFRAG_LENGTH);
++  // Pwd: 8 chars env-derived prefix + 16 chars true random.
++  constexpr int kPrefix = 8;
++  std::string prefix = MoCiHashStr(seed + "::pwd", kPrefix);
++  std::string suffix = CreateRandomString(ICE_PWD_LENGTH - kPrefix);
++  *pwd = prefix + suffix;
++  return true;
++}
++
++}  // namespace
