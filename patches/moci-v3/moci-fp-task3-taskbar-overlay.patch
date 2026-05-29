@@ -1,0 +1,42 @@
+diff --git a/chrome/browser/ui/views/frame/windows_taskbar_icon_updater.cc b/chrome/browser/ui/views/frame/windows_taskbar_icon_updater.cc
+index be95d6f3b2..60a63df475 100644
+--- a/chrome/browser/ui/views/frame/windows_taskbar_icon_updater.cc
++++ b/chrome/browser/ui/views/frame/windows_taskbar_icon_updater.cc
+@@ -5,9 +5,14 @@
+ #include "chrome/browser/ui/views/frame/windows_taskbar_icon_updater.h"
+ 
+ #include "base/check_is_test.h"
++// [MoCi Sprint1 任务 3] 读 --moci-env-number switch
++#include "base/command_line.h"
++#include "base/strings/string_number_conversions.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/taskbar/taskbar_decorator_win.h"
++#include "chrome/browser/ui/browser.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ 
+ WindowsTaskbarIconUpdater::WindowsTaskbarIconUpdater(BrowserView& browser_view)
+     : browser_view_(browser_view) {
+@@ -65,6 +70,22 @@ void WindowsTaskbarIconUpdater::OnWidgetVisibilityChanged(views::Widget* widget,
+ }
+ 
+ void WindowsTaskbarIconUpdater::UpdateIcon() {
++  // [MoCi Sprint1 任务 3] 如 chrome 启动带 --moci-env-number=N，画数字 overlay
++  // badge (16×16 圆形 dark bg + 白色数字) 让吴总在 Windows 任务栏一眼区分
++  // 多 env chrome 实例。chromium 自带 taskbar::DrawTaskbarDecorationString
++  // 已经实现 skia 渲染，直接复用。
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (cmd && cmd->HasSwitch("moci-env-number")) {
++    std::string num_str = cmd->GetSwitchValueASCII("moci-env-number");
++    int env_num = 0;
++    if (base::StringToInt(num_str, &env_num) && env_num > 0) {
++      taskbar::DrawTaskbarDecorationString(
++          browser_view_->GetNativeWindow(),
++          num_str,
++          "MoCi Env #" + num_str);
++      return;
++    }
++  }
+   taskbar::UpdateTaskbarDecoration(browser_view_->browser()->profile(),
+                                    browser_view_->GetNativeWindow());
+ }
