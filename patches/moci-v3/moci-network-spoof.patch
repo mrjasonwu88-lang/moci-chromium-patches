@@ -2,16 +2,20 @@ diff --git a/base/i18n/icu_util.cc b/base/i18n/icu_util.cc
 index 6e6e12089d..4853233247 100644
 --- a/base/i18n/icu_util.cc
 +++ b/base/i18n/icu_util.cc
-@@ -15,8 +15,12 @@
+@@ -15,8 +15,16 @@
  #include <memory>
  #include <string>
- 
+
 +#include <functional>
++#include <optional>
 +
 +#include "base/command_line.h"
  #include "base/compiler_specific.h"
  #include "base/debug/alias.h"
 +#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/json/json_reader.h"
++#include "base/values.h"
  #include "base/debug/crash_logging.h"
  #include "base/environment.h"
  #include "base/files/file_path.h"
@@ -33,18 +37,37 @@ index 6e6e12089d..4853233247 100644
  
  namespace base::i18n {
  
-@@ -314,6 +315,27 @@ bool InitializeICUFromDataFile() {
+@@ -314,6 +315,47 @@ bool InitializeICUFromDataFile() {
  // On some platforms, the time zone must be explicitly initialized zone rather
  // than relying on ICU's internal initialization.
  void InitializeIcuTimeZone() {
-+  // MoCi fp-16: per-env timezone spoof from --fingerprint-config path hash.
-+  // Cross-border sellers commonly use VPS in US/EU/Asia; randomize one per
-+  // env so multi-account can't be correlated by Date.getTimezoneOffset() or
-+  // Intl.DateTimeFormat().resolvedOptions().timeZone.
++  // MoCi fp-16 B: 3-tier timezone spoof from --fingerprint-config.
++  // Tier 1: JSON timezone.name (user-configured in env). Tier 2: path-hash
++  // pool (per-env stable when JSON missing). Tier 3: detectHostTimeZone (no
++  // switch present). Use base::JSONReader directly here because base/i18n/
++  // cannot depend on components/moci/ (layering).
 +  if (auto* cmd = base::CommandLine::ForCurrentProcess();
 +      cmd && cmd->HasSwitch("fingerprint-config")) {
 +    auto p = cmd->GetSwitchValuePath("fingerprint-config");
 +    if (!p.empty()) {
++      // Tier 1: read timezone.name from JSON.
++      // Chromium 148: JSONReader::ReadDict signature requires options arg.
++      std::string contents;
++      if (base::ReadFileToString(p, &contents)) {
++        auto dict = base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
++        if (dict) {
++          if (auto* tz = dict->FindDict("timezone")) {
++            if (auto* name = tz->FindString("name");
++                name && !name->empty()) {
++              icu::TimeZone::adoptDefault(
++                  icu::TimeZone::createTimeZone(
++                      icu::UnicodeString::fromUTF8(*name)));
++              return;
++            }
++          }
++        }
++      }
++      // Tier 2: path-hash pool (fallback when JSON missing/invalid).
 +      static const char* const kZones[] = {
 +        "America/New_York", "America/Los_Angeles", "America/Chicago",
 +        "Europe/London",    "Europe/Berlin",       "Europe/Paris",
@@ -58,6 +81,7 @@ index 6e6e12089d..4853233247 100644
 +      return;
 +    }
 +  }
++  // Tier 3: original platform-specific detection (no --fingerprint-config).
  #if BUILDFLAG(IS_FUCHSIA)
    // The platform-specific mechanisms used by ICU's detectHostTimeZone() to
    // determine the default time zone will not work on Fuchsia. Therefore,

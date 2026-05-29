@@ -16,7 +16,7 @@
 | `moci-infra.patch` | 256 | fp-01 `--fingerprint-config` switch + fp-02 ChromeMainDelegate hook + fp-03b propagate to child processes + fp-08 env var export `MOCI_FINGERPRINT_CONFIG_PATH` (BoringSSL 读取入口) |
 | `moci-blink-noise.patch` | 846 | fp-03 Canvas + fp-04 Audio + fp-05 WebGL vendor/renderer + fp-10 ClientRects + fp-15 Screen pool + fp-17 WebGPU adapter + fp-26 hardwareConcurrency + fp-26b deviceMemory + fp-27 outer dimensions + fp-28 history.length cap + fp-23 media queries + runtime_enabled_features.json5 |
 | `moci-blink-disable.patch` | 315 | fp-09 webdriver=false + fp-12 mediaDevices + fp-13 speech + fp-19 battery + fp-20 bluetooth + fp-21 permissions + fp-29 storage quota + fp-32 maxTouchPoints + fp-34 PressureObserver/IdleDetector |
-| `moci-network-spoof.patch` | 207 | fp-14 Client Hints + fp-16 timezone + fp-22 navigator.connection |
+| `moci-network-spoof.patch` | 218 | fp-14 Client Hints + fp-16 timezone (B: 3-tier JSON timezone.name > path-hash pool > host) + fp-22 navigator.connection |
 | `moci-phase3-brand.patch` | 285 | BRANDING + chromium_strings.grd (魔词浏览器 / 魔词) + version.py UTF-8 fix |
 | `moci-fp24-perf-precision.patch` | 56 | fp-24 Performance.now() 1ms / 0.1ms 粗化 + performance.memory 强制 bucketized — 抵 WASM 编译时间指纹 / V8 heap 探测 |
 | `moci-fp18-http2-grease.patch` | 70 | fp-18 HTTP/2 SETTINGS GREASE 按 environment seed 派生（id+value 双确定性）— Akamai H2 fingerprint hash 单 env 稳定、跨 env 全异 |
