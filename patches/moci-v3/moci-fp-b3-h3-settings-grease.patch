@@ -1,0 +1,67 @@
+diff --git a/quiche/quic/core/http/http_encoder.cc b/quiche/quic/core/http/http_encoder.cc
+index 3edb43a..03a5757 100644
+--- a/quiche/quic/core/http/http_encoder.cc
++++ b/quiche/quic/core/http/http_encoder.cc
+@@ -11,6 +11,12 @@
+ #include <utility>
+ #include <vector>
+ 
++// [MoCi fp-B3] inject env-derived GREASE into H3 SETTINGS frame to vary
++// the Akamai H3 fingerprint hash per env. Header is in chromium base/,
++// quiche is allowed to depend on base via BUILD.gn (verified in fp-08 path).
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++
+ #include "quiche/quic/core/crypto/quic_random.h"
+ #include "quiche/quic/core/quic_data_writer.h"
+ #include "quiche/quic/core/quic_types.h"
+@@ -86,7 +92,48 @@ std::string HttpEncoder::SerializeSettingsFrame(const SettingsFrame& settings) {
+   QuicByteCount payload_length = 0;
+   std::vector<std::pair<uint64_t, uint64_t>> ordered_settings{
+       settings.values.begin(), settings.values.end()};
+-  std::sort(ordered_settings.begin(), ordered_settings.end());
++  // [MoCi fp-B3] H3 SETTINGS per-env fingerprint:
++  // (1) inject a GREASE id from RFC 9114 reserved space (0x1f*N+0x21) to make
++  //     the SETTINGS field-set vary per env (Akamai H3 fp hash input).
++  // (2) replace std::sort with envId-derived ordering so the on-wire bytes
++  //     are stable per env but differ across envs.
++  // (3) preserved fp-08 (TLS grease) + fp-18 (H2 GREASE) at lower layers.
++  bool moci_applied = false;
++  if (auto* cmd = base::CommandLine::ForCurrentProcess();
++      cmd && cmd->HasSwitch("fingerprint-config")) {
++    auto p = cmd->GetSwitchValuePath("fingerprint-config");
++    if (!p.empty()) {
++      // FNV-1a 64 bit of fingerprint-config path string.
++      uint64_t h = 0xcbf29ce484222325ULL;
++      for (const auto c : p.value()) {
++        h ^= static_cast<uint8_t>(c);
++        h *= 0x100000001b3ULL;
++      }
++      // RFC 9114 grease range: 0x1f * N + 0x21. Pick N from hash low 16 bits
++      // → grease_id ≈ 0x1f*N+0x21 (uint62), 0x21..0x1f0021.
++      uint64_t grease_id = 0x1fULL * (h & 0xffff) + 0x21ULL;
++      uint64_t grease_value = (h >> 32);
++      ordered_settings.emplace_back(grease_id, grease_value);
++      // Deterministic per-env ordering: sort by hash of (id, value, envSeed).
++      const uint64_t seed = h;
++      std::sort(ordered_settings.begin(), ordered_settings.end(),
++                [seed](const std::pair<uint64_t, uint64_t>& a,
++                       const std::pair<uint64_t, uint64_t>& b) {
++                  auto mix = [seed](uint64_t k) {
++                    uint64_t x = k ^ seed;
++                    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
++                    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
++                    x ^= x >> 33;
++                    return x;
++                  };
++                  return mix(a.first) < mix(b.first);
++                });
++      moci_applied = true;
++    }
++  }
++  if (!moci_applied) {
++    std::sort(ordered_settings.begin(), ordered_settings.end());
++  }
+   // Calculate the payload length.
+   for (const auto& p : ordered_settings) {
+     payload_length += QuicDataWriter::GetVarInt62Len(p.first);

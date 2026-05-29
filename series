@@ -8,3 +8,4 @@ moci-v3/moci-fp24-perf-precision.patch
 moci-v3/moci-fp18-http2-grease.patch
 moci-v3/moci-fp08-tls-grease.patch
 moci-v3/moci-fp-b2-webrtc-sdp.patch
+moci-v3/moci-fp-b3-h3-settings-grease.patch
