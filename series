@@ -10,3 +10,4 @@ moci-v3/moci-fp08-tls-grease.patch
 moci-v3/moci-fp-b2-webrtc-sdp.patch
 moci-v3/moci-fp-b3-h3-settings-grease.patch
 moci-v3/moci-fp-task3-taskbar-overlay.patch
+moci-v3/moci-fp-task2-envindicator-locationbar.patch

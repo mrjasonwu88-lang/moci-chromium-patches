@@ -1,0 +1,786 @@
+diff --git chrome/browser/ui/views/location_bar/BUILD.gn chrome/browser/ui/views/location_bar/BUILD.gn
+index 45482bab07..742370bec7 100644
+--- chrome/browser/ui/views/location_bar/BUILD.gn
++++ chrome/browser/ui/views/location_bar/BUILD.gn
+@@ -87,6 +87,9 @@ source_set("impl") {
+       "location_icon_state_helper.cc",
+       "location_icon_view.cc",
+       "merchant_trust_chip_button_controller.cc",
++      # [MoCi Sprint1 任务 2] 地址栏账号+代理信息条
++      "moci_env_indicator_view.cc",
++      "moci_env_indicator_view.h",
+       "omnibox_chip_button.cc",
+       "omnibox_popup_file_selector.cc",
+       "record_replay_page_action_controller.cc",
+diff --git chrome/browser/ui/views/location_bar/location_bar_view.cc chrome/browser/ui/views/location_bar/location_bar_view.cc
+index a5039973e1..cba4f3836a 100644
+--- chrome/browser/ui/views/location_bar/location_bar_view.cc
++++ chrome/browser/ui/views/location_bar/location_bar_view.cc
+@@ -74,6 +74,8 @@
+ #include "chrome/browser/ui/views/location_bar/location_bar_layout.h"
+ #include "chrome/browser/ui/views/location_bar/location_icon_view.h"
+ #include "chrome/browser/ui/views/location_bar/merchant_trust_chip_button_controller.h"
++// [MoCi Sprint1 任务 2] 账号+代理信息条
++#include "chrome/browser/ui/views/location_bar/moci_env_indicator_view.h"
+ #include "chrome/browser/ui/views/location_bar/omnibox_chip_button.h"
+ #include "chrome/browser/ui/views/location_bar/omnibox_popup_file_selector.h"
+ #include "chrome/browser/ui/views/location_bar/selected_keyword_view.h"
+@@ -333,6 +335,13 @@ void LocationBarView::Init() {
+   location_icon_view->set_drag_controller(this);
+   location_icon_view_ = AddChildView(std::move(location_icon_view));
+ 
++  // [MoCi Sprint1 任务 2] 在 LocationIcon 后追加账号+代理信息条
++  // 启动时一次性从 --fingerprint-config JSON 加载，env 数据全程不变。
++  auto moci_indicator = std::make_unique<MoCiEnvIndicatorView>();
++  bool moci_has_data = moci_indicator->LoadFromFingerprintConfig();
++  moci_env_indicator_ = AddChildView(std::move(moci_indicator));
++  moci_env_indicator_->SetVisible(moci_has_data);
++
+   if (page_info::IsMerchantTrustFeatureEnabled() &&
+       page_info::kMerchantTrustEnableOmniboxChip.Get()) {
+     merchant_trust_chip_ = AddChildView(std::make_unique<OmniboxChipButton>());
+@@ -986,6 +995,19 @@ void LocationBarView::Layout(PassKey) {
+     }
+   }
+ 
++  // [MoCi Sprint1 任务 2] MoCi 账号+代理信息条紧贴 location_icon 右侧。
++  // 显示条件：env 数据已加载 + 地址栏非编辑态 + 锁标不展开文本。
++  if (moci_env_indicator_ && moci_env_indicator_->has_data() &&
++      !IsEditingOrEmpty() && !location_icon_view_->GetShowText()) {
++    constexpr int kMoCiChipPadding = 4;
++    moci_env_indicator_->SetVisible(true);
++    leading_decorations.AddDecoration(vertical_padding, location_height,
++                                      false, 0, kMoCiChipPadding, icon_left,
++                                      moci_env_indicator_);
++  } else if (moci_env_indicator_) {
++    moci_env_indicator_->SetVisible(false);
++  }
++
+   auto add_trailing_decoration = [&](View* view, int intra_item_padding,
+                                      int edge_padding) {
+     if (view->GetVisible()) {
+diff --git chrome/browser/ui/views/location_bar/location_bar_view.h chrome/browser/ui/views/location_bar/location_bar_view.h
+index 3195e87abb..5aab3e7c9f 100644
+--- chrome/browser/ui/views/location_bar/location_bar_view.h
++++ chrome/browser/ui/views/location_bar/location_bar_view.h
+@@ -567,6 +567,9 @@ class LocationBarView
+   // search icon, EV HTTPS bubble, etc.
+   raw_ptr<LocationIconView> location_icon_view_ = nullptr;
+ 
++  // [MoCi Sprint1 任务 2] 地址栏 Site Settings 按钮右侧的账号+代理信息条
++  raw_ptr<class MoCiEnvIndicatorView> moci_env_indicator_ = nullptr;
++
+   // Views to show inline autocompletion when an IME is active.  In this case,
+   // we shouldn't change the text or selection inside the OmniboxView itself,
+   // since this will conflict with the IME's control over the text.  So instead
+diff --git chrome/browser/ui/views/location_bar/moci_env_indicator_view.h chrome/browser/ui/views/location_bar/moci_env_indicator_view.h
+new file mode 100644
+index 0000000000..1111111111
+--- chrome/browser/ui/views/location_bar/moci_env_indicator_view.h
++++ chrome/browser/ui/views/location_bar/moci_env_indicator_view.h
+@@ -0,0 +1,99 @@
++// Copyright 2026 The MoCi Authors
++// [MoCi Sprint1 任务 2 v7] 3 行合并轮播 + Site Settings 同款底色 + 自建 tooltip
++//   - bg 用 chromium ColorProvider 的 kColorOmniboxIconBackground，跟 (i) 同款
++//   - tooltip 改成自建 popup Widget (chromium SetTooltipText 在 leading
++//     decoration 路径走不通，5 个版本验证失败)
++
++#ifndef CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_MOCI_ENV_INDICATOR_VIEW_H_
++#define CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_MOCI_ENV_INDICATOR_VIEW_H_
++
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "base/timer/timer.h"
++#include "ui/base/metadata/metadata_header_macros.h"
++#include "ui/views/view.h"
++#include "ui/views/widget/widget.h"
++
++namespace views {
++class Label;
++}
++
++class MoCiEnvIndicatorView : public views::View {
++  METADATA_HEADER(MoCiEnvIndicatorView, views::View)
++
++ public:
++  MoCiEnvIndicatorView();
++  MoCiEnvIndicatorView(const MoCiEnvIndicatorView&) = delete;
++  MoCiEnvIndicatorView& operator=(const MoCiEnvIndicatorView&) = delete;
++  ~MoCiEnvIndicatorView() override;
++
++  bool LoadFromFingerprintConfig();
++  bool has_data() const { return has_data_; }
++
++  void OnMouseEntered(const ui::MouseEvent& event) override;
++  void OnMouseExited(const ui::MouseEvent& event) override;
++  void Layout(PassKey) override;
++  gfx::Size CalculatePreferredSize(
++      const views::SizeBounds& available_size) const override;
++  void AddedToWidget() override;
++  void OnThemeChanged() override;
++
++ private:
++  struct InfoRow {
++    std::u16string prefix;
++    std::u16string content;
++  };
++
++  void StartTickTimer();
++  void StopTickTimer();
++  void OnTick();
++  void BuildRows();
++  void BuildTooltipText();
++  std::unique_ptr<views::View> MakeRowView(const InfoRow& info);
++  void ResetAfterWrap();
++  void UpdateBackgroundFromTheme();
++
++  // v8 hover polling: 100ms 查 cursor 是否在 bar 屏幕坐标内
++  void PollHover();
++  void OnEntered();
++  void OnExited();
++
++  // 自建 tooltip popup
++  void ScheduleShowTooltip();
++  void ShowTooltipNow();
++  void HideTooltip();
++
++  raw_ptr<views::View> scroll_container_ = nullptr;
++  std::vector<raw_ptr<views::View>> row_views_;
++  std::vector<InfoRow> rows_;
++
++  base::RepeatingTimer toggle_timer_;
++  base::RepeatingTimer hover_poll_timer_;  // v8 polling 替 OnMouseEntered
++  base::OneShotTimer tooltip_show_timer_;
++  size_t active_idx_ = 0;
++  bool has_data_ = false;
++  bool mouse_inside_ = false;
++  int measured_width_ = 0;
++  std::u16string tooltip_text_;
++
++  // 自建 popup widget
++  std::unique_ptr<views::Widget> tooltip_widget_;
++
++  std::string env_number_;
++  std::string account_name_;
++  std::string company_name_;
++  std::string platform_;
++  std::string platform_site_;
++  std::string account_email_;
++  std::string ip_address_;
++  std::string instance_region_;
++  std::string instance_type_;
++
++  base::WeakPtrFactory<MoCiEnvIndicatorView> weak_factory_{this};
++};
++
++#endif  // CHROME_BROWSER_UI_VIEWS_LOCATION_BAR_MOCI_ENV_INDICATOR_VIEW_H_
+diff --git chrome/browser/ui/views/location_bar/moci_env_indicator_view.cc chrome/browser/ui/views/location_bar/moci_env_indicator_view.cc
+new file mode 100644
+index 0000000000..1111111112
+--- chrome/browser/ui/views/location_bar/moci_env_indicator_view.cc
++++ chrome/browser/ui/views/location_bar/moci_env_indicator_view.cc
+@@ -0,0 +1,600 @@
++// Copyright 2026 The MoCi Authors
++// [MoCi Sprint1 任务 2 v7] 实现
++
++#include "chrome/browser/ui/views/location_bar/moci_env_indicator_view.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "base/command_line.h"
++#include "base/files/file_path.h"
++#include "base/files/file_util.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/strings/string_number_conversions.h"
++#include "base/strings/utf_string_conversions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
++#include "base/values.h"
++#include "chrome/browser/ui/color/chrome_color_id.h"
++#include "third_party/skia/include/core/SkColor.h"
++#include "ui/base/clipboard/scoped_clipboard_writer.h"
++#include "ui/base/metadata/metadata_impl_macros.h"
++#include "ui/color/color_provider.h"
++#include "ui/display/screen.h"
++#include "ui/events/event.h"
++#include "ui/compositor/layer.h"
++#include "ui/compositor/scoped_layer_animation_settings.h"
++#include "ui/gfx/font_list.h"
++#include "ui/gfx/geometry/insets.h"
++#include "ui/gfx/geometry/rounded_corners_f.h"
++#include "ui/gfx/geometry/transform.h"
++#include "ui/gfx/text_utils.h"
++#include "ui/views/background.h"
++#include "ui/views/border.h"
++#include "ui/views/controls/label.h"
++#include "ui/views/layout/box_layout.h"
++#include "ui/views/widget/widget.h"
++
++namespace {
++
++// 节奏：每行 4s 可见，slide 350ms（v11: 缩短减少 mid-frame 重影感）
++constexpr base::TimeDelta kToggleInterval = base::Seconds(4);
++constexpr base::TimeDelta kSlideDuration  = base::Milliseconds(350);
++
++// tooltip 弹出延迟
++constexpr base::TimeDelta kTooltipShowDelay = base::Milliseconds(400);
++// hover polling 间隔
++constexpr base::TimeDelta kHoverPollInterval = base::Milliseconds(100);
++
++constexpr int kRowHeight = 20;
++constexpr int kVerticalPadding = 1;
++constexpr int kHorizontalPadding = 9;
++constexpr int kViewHeight = kVerticalPadding * 2 + kRowHeight;  // 22
++
++constexpr int kFontSize = 12;
++constexpr int kBorderRadius = 6;
++
++// v9 高端化：极浅 ash 底 + 细描边（白底在白 omnibox 看不见）
++constexpr SkColor kBackgroundColor = SkColorSetRGB(0xF6, 0xF7, 0xF9);  // 极浅 ash gray
++constexpr SkColor kBorderColor     = SkColorSetRGB(0xD5, 0xDB, 0xE3);  // 中浅描边可见
++constexpr SkColor kContentColor    = SkColorSetRGB(0x11, 0x18, 0x27);  // 深 graphite
++
++// v10 tooltip popup 换白底高端 Apple-card 风格
++constexpr SkColor kTooltipBgColor      = SkColorSetRGB(0xFF, 0xFF, 0xFF);  // 白
++constexpr SkColor kTooltipBorderColor  = SkColorSetRGB(0xE2, 0xE8, 0xF0);  // slate-200
++constexpr SkColor kTooltipLabelColor   = SkColorSetRGB(0x64, 0x74, 0x8B);  // slate-500
++constexpr SkColor kTooltipValueColor   = SkColorSetRGB(0x0F, 0x17, 0x2A);  // slate-900
++constexpr SkColor kTooltipDividerColor = SkColorSetRGB(0xE2, 0xE8, 0xF0);  // slate-200
++
++gfx::FontList GetMoCiFontList() {
++  return gfx::FontList({"Microsoft YaHei UI", "Segoe UI", "Arial"},
++                       gfx::Font::FontStyle::NORMAL, kFontSize,
++                       gfx::Font::Weight::NORMAL);
++}
++
++gfx::FontList GetTooltipFontList() {
++  return gfx::FontList({"Microsoft YaHei UI", "Segoe UI", "Arial"},
++                       gfx::Font::FontStyle::NORMAL, 12,
++                       gfx::Font::Weight::NORMAL);
++}
++
++}  // namespace
++
++MoCiEnvIndicatorView::MoCiEnvIndicatorView() {
++  SetPaintToLayer();
++  // v11d: 让 compositor 自己裁圆角，四个角真透明（否则方形 opaque layer 会
++  // 在圆角外露底色）
++  layer()->SetFillsBoundsOpaquely(false);
++  layer()->SetMasksToBounds(true);
++  layer()->SetRoundedCornerRadius(gfx::RoundedCornersF(kBorderRadius));
++  layer()->SetIsFastRoundedCorner(true);
++  // 只圆角背景，不要边框
++  SetBackground(views::CreateRoundedRectBackground(kBackgroundColor,
++                                                   kBorderRadius));
++
++  // 防御：mouse hover 命中
++  SetCanProcessEventsWithinSubtree(true);
++
++  auto scroll = std::make_unique<views::View>();
++  scroll->SetPaintToLayer();
++  scroll->layer()->SetFillsBoundsOpaquely(false);
++  scroll->SetBackground(views::CreateSolidBackground(kBackgroundColor));
++  scroll->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
++  scroll_container_ = AddChildView(std::move(scroll));
++}
++
++MoCiEnvIndicatorView::~MoCiEnvIndicatorView() {
++  HideTooltip();
++}
++
++bool MoCiEnvIndicatorView::LoadFromFingerprintConfig() {
++  auto* cmd = base::CommandLine::ForCurrentProcess();
++  if (!cmd || !cmd->HasSwitch("fingerprint-config")) {
++    return false;
++  }
++  auto path = cmd->GetSwitchValuePath("fingerprint-config");
++  if (path.empty()) {
++    return false;
++  }
++  std::string contents;
++  if (!base::ReadFileToString(path, &contents)) {
++    return false;
++  }
++  auto root = base::JSONReader::ReadDict(contents, base::JSON_PARSE_RFC);
++  if (!root) {
++    return false;
++  }
++  auto* env_display = root->FindDict("envDisplay");
++  if (!env_display) {
++    return false;
++  }
++  auto get = [env_display](const char* k) -> std::string {
++    auto* v = env_display->FindString(k);
++    return v ? *v : std::string();
++  };
++  if (auto num = env_display->FindInt("envNumber")) {
++    env_number_ = base::NumberToString(*num);
++  }
++  account_name_ = get("accountName");
++  company_name_ = get("companyName");
++  platform_ = get("platform");
++  platform_site_ = get("platformSite");
++  account_email_ = get("accountEmail");
++  ip_address_ = get("ipAddress");
++  instance_region_ = get("instanceRegion");
++  instance_type_ = get("instanceType");
++  has_data_ = !account_name_.empty() || !ip_address_.empty();
++  if (!has_data_) {
++    return false;
++  }
++
++  BuildRows();
++  BuildTooltipText();
++
++  active_idx_ = 0;
++  if (scroll_container_ && scroll_container_->layer()) {
++    scroll_container_->layer()->SetTransform(gfx::Transform());
++  }
++  StartTickTimer();
++  // v8: 启动 hover polling（chromium OnMouseEntered 在 LocationBar 这层不来）
++  hover_poll_timer_.Start(FROM_HERE, kHoverPollInterval,
++                          base::BindRepeating(&MoCiEnvIndicatorView::PollHover,
++                                              base::Unretained(this)));
++  return true;
++}
++
++void MoCiEnvIndicatorView::BuildRows() {
++  rows_.clear();
++
++  // Row 1: #1 云淘沃尔玛 · Walmart US
++  std::string r1;
++  if (!account_name_.empty()) {
++    r1 = env_number_.empty() ? account_name_
++                             : "#" + env_number_ + " " + account_name_;
++  }
++  if (!platform_.empty()) {
++    if (!r1.empty()) r1 += " · ";
++    r1 += platform_;
++    if (!platform_site_.empty()) r1 += " " + platform_site_;
++  }
++  if (!r1.empty()) {
++    rows_.push_back({std::u16string(), base::UTF8ToUTF16(r1)});
++  }
++
++  // Row 2: 邮箱
++  if (!account_email_.empty()) {
++    rows_.push_back({std::u16string(), base::UTF8ToUTF16(account_email_)});
++  }
++
++  // Row 3: 154.62.163.250 · 美国-弗吉尼亚（宽度基准）
++  std::string r3;
++  if (!ip_address_.empty()) r3 = ip_address_;
++  if (!instance_region_.empty()) {
++    if (!r3.empty()) r3 += " · ";
++    r3 += instance_region_;
++  }
++  if (!r3.empty()) {
++    rows_.push_back({std::u16string(), base::UTF8ToUTF16(r3)});
++  }
++
++  // 用代理行宽度作为整个 bar 的固定宽度
++  if (!rows_.empty()) {
++    const gfx::FontList font = GetMoCiFontList();
++    const InfoRow& proxy_row = rows_.back();
++    int proxy_w = gfx::GetStringWidth(proxy_row.content, font);
++    measured_width_ = proxy_w + kHorizontalPadding * 2 + 4;
++  }
++
++  // wrap 优化：末尾追加 row[0] 副本
++  if (scroll_container_) {
++    scroll_container_->RemoveAllChildViews();
++    row_views_.clear();
++    for (const auto& r : rows_) {
++      row_views_.push_back(scroll_container_->AddChildView(MakeRowView(r)));
++    }
++    if (rows_.size() > 1) {
++      scroll_container_->AddChildView(MakeRowView(rows_[0]));
++    }
++  }
++}
++
++std::unique_ptr<views::View> MoCiEnvIndicatorView::MakeRowView(
++    const InfoRow& info) {
++  const gfx::FontList font = GetMoCiFontList();
++  auto row = std::make_unique<views::View>();
++  auto* layout = row->SetLayoutManager(std::make_unique<views::BoxLayout>(
++      views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 0));
++  layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kCenter);
++
++  auto content = std::make_unique<views::Label>(
++      info.content, views::Label::CustomFont{font});
++  content->SetEnabledColor(kContentColor);
++  content->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++  content->SetElideBehavior(gfx::ELIDE_TAIL);
++  // 禁用 Label 自动 tooltip（避免和我们的自建 popup tooltip 重叠显示）
++  content->SetHandlesTooltips(false);
++  auto* content_ptr = row->AddChildView(std::move(content));
++  layout->SetFlexForView(content_ptr, 1);
++  row->SetPreferredSize(gfx::Size(0, kRowHeight));
++  return row;
++}
++
++void MoCiEnvIndicatorView::StartTickTimer() {
++  if (!has_data_ || rows_.size() <= 1) {
++    return;
++  }
++  toggle_timer_.Start(FROM_HERE, kToggleInterval,
++                      base::BindRepeating(&MoCiEnvIndicatorView::OnTick,
++                                          base::Unretained(this)));
++}
++
++void MoCiEnvIndicatorView::StopTickTimer() {
++  toggle_timer_.Stop();
++}
++
++void MoCiEnvIndicatorView::OnTick() {
++  if (mouse_inside_) return;
++  if (!scroll_container_ || !scroll_container_->layer() || rows_.empty()) {
++    return;
++  }
++  size_t next = active_idx_ + 1;
++  bool will_wrap = (next >= rows_.size());
++
++  gfx::Transform target;
++  target.Translate(0, -static_cast<int>(next) * kRowHeight);
++
++  {
++    ui::ScopedLayerAnimationSettings settings(
++        scroll_container_->layer()->GetAnimator());
++    settings.SetTransitionDuration(kSlideDuration);
++    settings.SetTweenType(gfx::Tween::EASE_IN_OUT);
++    scroll_container_->layer()->SetTransform(target);
++  }
++  active_idx_ = next;
++
++  if (will_wrap) {
++    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++        FROM_HERE,
++        base::BindOnce(&MoCiEnvIndicatorView::ResetAfterWrap,
++                       weak_factory_.GetWeakPtr()),
++        kSlideDuration + base::Milliseconds(50));
++  }
++}
++
++void MoCiEnvIndicatorView::ResetAfterWrap() {
++  if (!scroll_container_ || !scroll_container_->layer()) {
++    return;
++  }
++  scroll_container_->layer()->GetAnimator()->AbortAllAnimations();
++  scroll_container_->layer()->SetTransform(gfx::Transform());
++  active_idx_ = 0;
++}
++
++void MoCiEnvIndicatorView::OnMouseEntered(const ui::MouseEvent& event) {
++  views::View::OnMouseEntered(event);  // 此回调在 LocationBar 路径不可靠，hover 走 polling
++}
++
++void MoCiEnvIndicatorView::OnMouseExited(const ui::MouseEvent& event) {
++  views::View::OnMouseExited(event);
++}
++
++void MoCiEnvIndicatorView::PollHover() {
++  if (!GetWidget() || !GetVisible()) return;
++  auto* screen = display::Screen::Get();
++  if (!screen) return;
++  gfx::Point cursor = screen->GetCursorScreenPoint();
++  gfx::Rect bar_screen = GetBoundsInScreen();
++  // v10 关键：把 bar+popup 合成"交互区"，含中间的 gap，让 cursor 能从 bar
++  // 安全地滑到 popup 上做复制操作而不会触发 HideTooltip。
++  gfx::Rect interaction_zone = bar_screen;
++  if (tooltip_widget_) {
++    interaction_zone.Union(tooltip_widget_->GetWindowBoundsInScreen());
++  }
++  bool inside = interaction_zone.Contains(cursor);
++  if (inside && !mouse_inside_) {
++    OnEntered();
++  } else if (!inside && mouse_inside_) {
++    OnExited();
++  }
++}
++
++void MoCiEnvIndicatorView::OnEntered() {
++  mouse_inside_ = true;
++  ScheduleShowTooltip();
++}
++
++void MoCiEnvIndicatorView::OnExited() {
++  mouse_inside_ = false;
++  tooltip_show_timer_.Stop();
++  HideTooltip();
++}
++
++void MoCiEnvIndicatorView::BuildTooltipText() {
++  // v9: tooltip 内容直接由 ShowTooltipNow 构造 Label 子视图，
++  // tooltip_text_ 仅作为"有 tooltip 内容"的存在性标记。
++  tooltip_text_ = u"x";  // 非空即可
++}
++
++void MoCiEnvIndicatorView::ScheduleShowTooltip() {
++  if (tooltip_text_.empty()) return;
++  tooltip_show_timer_.Start(FROM_HERE, kTooltipShowDelay,
++                            base::BindOnce(&MoCiEnvIndicatorView::ShowTooltipNow,
++                                           base::Unretained(this)));
++}
++
++namespace {
++
++constexpr int kFieldLabelWidth = 64;
++constexpr int kFieldRowHeight = 30;        // 加大行高
++constexpr int kFieldRowVPad   = 5;          // 行内上下 padding
++constexpr int kCopyFeedbackMs = 1500;
++
++// 字段名 / 值 颜色（白卡片配色）
++constexpr SkColor kFieldLabelColor      = SkColorSetRGB(0x64, 0x74, 0x8B);  // slate-500
++constexpr SkColor kFieldValueColor      = SkColorSetRGB(0x0F, 0x17, 0x2A);  // slate-900
++constexpr SkColor kFieldHoverBgColor    = SkColorSetRGB(0xF1, 0xF5, 0xF9);  // slate-100
++constexpr SkColor kRowSeparatorColor    = SkColorSetRGB(0xF1, 0xF5, 0xF9);  // 行底分隔线
++constexpr SkColor kCopiedColor          = SkColorSetRGB(0x05, 0x96, 0x69);  // emerald-600
++constexpr SkColor kCopiedBgColor        = SkColorSetRGB(0xD1, 0xFA, 0xE5);  // emerald-100
++
++gfx::FontList LabelFont() {
++  return gfx::FontList({"Microsoft YaHei UI", "Segoe UI", "Arial"},
++                       gfx::Font::FontStyle::NORMAL, 11,
++                       gfx::Font::Weight::MEDIUM);
++}
++
++gfx::FontList ValueFont() {
++  return gfx::FontList({"Microsoft YaHei UI", "Segoe UI", "Arial"},
++                       gfx::Font::FontStyle::NORMAL, 12,
++                       gfx::Font::Weight::NORMAL);
++}
++
++// 可点击的 row: 水平排版 [label 60px] [value] + hover bg + click 复制
++class CopyableFieldRow : public views::View {
++  METADATA_HEADER(CopyableFieldRow, views::View)
++
++ public:
++  CopyableFieldRow(const std::u16string& label_text,
++                   const std::u16string& value_text,
++                   bool show_bottom_separator)
++      : value_text_(value_text) {
++    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
++        views::BoxLayout::Orientation::kHorizontal,
++        gfx::Insets::VH(kFieldRowVPad, 6), 8));
++    layout->set_cross_axis_alignment(
++        views::BoxLayout::CrossAxisAlignment::kCenter);
++    if (show_bottom_separator) {
++      // 行底 1px 分隔线
++      SetBorder(views::CreateSolidSidedBorder(
++          gfx::Insets::TLBR(0, 0, 1, 0), kRowSeparatorColor));
++    }
++
++    auto label = std::make_unique<views::Label>(
++        label_text, views::Label::CustomFont{LabelFont()});
++    label->SetEnabledColor(kFieldLabelColor);
++    label->SetBackgroundColor(SK_ColorTRANSPARENT);
++    label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    label->SetPreferredSize(gfx::Size(kFieldLabelWidth, kFieldRowHeight - 8));
++    AddChildView(std::move(label));
++
++    auto value = std::make_unique<views::Label>(
++        value_text, views::Label::CustomFont{ValueFont()});
++    value->SetEnabledColor(kFieldValueColor);
++    value->SetBackgroundColor(SK_ColorTRANSPARENT);
++    value->SetHorizontalAlignment(gfx::ALIGN_LEFT);
++    value->SetElideBehavior(gfx::NO_ELIDE);
++    value_label_ = AddChildView(std::move(value));
++    layout->SetFlexForView(value_label_, 1);
++
++    // "✓ 已复制" 浮标 (右侧)，默认隐藏；点击后浮现 1.5s 自动消失
++    auto copied = std::make_unique<views::Label>(
++        u"✓ 已复制",
++        views::Label::CustomFont{
++            gfx::FontList({"Microsoft YaHei UI", "Segoe UI", "Arial"},
++                          gfx::Font::FontStyle::NORMAL, 10,
++                          gfx::Font::Weight::MEDIUM)});
++    copied->SetEnabledColor(kCopiedColor);
++    copied->SetBackgroundColor(kCopiedBgColor);
++    copied->SetHorizontalAlignment(gfx::ALIGN_CENTER);
++    copied->SetBorder(views::CreatePaddedBorder(
++        views::CreateRoundedRectBorder(0, 8, SK_ColorTRANSPARENT),
++        gfx::Insets::VH(1, 6)));
++    copied->SetVisible(false);
++    copied_indicator_ = AddChildView(std::move(copied));
++  }
++
++  bool OnMousePressed(const ui::MouseEvent& event) override {
++    if (!event.IsOnlyLeftMouseButton()) return false;
++    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kCopyPaste);
++    writer.WriteText(value_text_);
++    // v11: 不动 value 原文，只在右侧浮出 "✓ 已复制" 指示
++    if (copied_indicator_) {
++      copied_indicator_->SetVisible(true);
++      InvalidateLayout();
++    }
++    feedback_timer_.Start(
++        FROM_HERE, base::Milliseconds(kCopyFeedbackMs),
++        base::BindOnce(&CopyableFieldRow::ResetFeedback,
++                       weak_factory_.GetWeakPtr()));
++    return true;
++  }
++
++  void OnMouseEntered(const ui::MouseEvent& event) override {
++    SetBackground(views::CreateRoundedRectBackground(kFieldHoverBgColor, 4));
++    SchedulePaint();
++  }
++
++  void OnMouseExited(const ui::MouseEvent& event) override {
++    SetBackground(nullptr);
++    SchedulePaint();
++  }
++
++ private:
++  void ResetFeedback() {
++    if (copied_indicator_) {
++      copied_indicator_->SetVisible(false);
++      InvalidateLayout();
++    }
++  }
++
++  raw_ptr<views::Label> value_label_ = nullptr;
++  raw_ptr<views::Label> copied_indicator_ = nullptr;
++  std::u16string value_text_;
++  base::OneShotTimer feedback_timer_;
++  base::WeakPtrFactory<CopyableFieldRow> weak_factory_{this};
++};
++
++BEGIN_METADATA(CopyableFieldRow)
++END_METADATA
++
++}  // namespace
++
++void MoCiEnvIndicatorView::ShowTooltipNow() {
++  if (tooltip_widget_) return;
++  if (!GetWidget()) return;
++  if (tooltip_text_.empty()) return;
++
++  views::Widget::InitParams params(
++      views::Widget::InitParams::CLIENT_OWNS_WIDGET,
++      views::Widget::InitParams::TYPE_TOOLTIP);
++  params.parent = GetWidget()->GetNativeView();
++  // v10: 接收点击（每行复制功能）
++  params.accept_events = true;
++  params.opacity = views::Widget::InitParams::WindowOpacity::kOpaque;
++  params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
++
++  // v10 紧凑 popup: 深 slate + 1px 描边 + horizontal field rows + click-to-copy
++  auto contents = std::make_unique<views::View>();
++  contents->SetBackground(
++      views::CreateRoundedRectBackground(kTooltipBgColor, 10));
++  contents->SetBorder(views::CreatePaddedBorder(
++      views::CreateRoundedRectBorder(1, 10, kTooltipBorderColor),
++      gfx::Insets::VH(8, 6)));
++  auto* contents_layout =
++      contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
++          views::BoxLayout::Orientation::kVertical, gfx::Insets(), 0));
++  contents_layout->set_cross_axis_alignment(
++      views::BoxLayout::CrossAxisAlignment::kStretch);
++
++  // 先收集所有要展示的行，再一次性添加（以便决定哪些行加 bottom separator）
++  struct Row { std::u16string label; std::u16string value; bool is_group_end; };
++  std::vector<Row> rows;
++
++  // 账号组
++  std::string acc_val = env_number_.empty() ? account_name_
++                          : "#" + env_number_ + " " + account_name_;
++  rows.push_back({u"账号", base::UTF8ToUTF16(acc_val), false});
++  if (!company_name_.empty()) {
++    rows.push_back({u"公司", base::UTF8ToUTF16(company_name_), false});
++  }
++  if (!platform_.empty()) {
++    std::string plat = platform_;
++    if (!platform_site_.empty()) plat += " · " + platform_site_;
++    rows.push_back({u"平台", base::UTF8ToUTF16(plat), false});
++  }
++  if (!account_email_.empty()) {
++    rows.push_back({u"邮箱", base::UTF8ToUTF16(account_email_), false});
++  }
++  if (!rows.empty()) rows.back().is_group_end = true;  // 账号组末尾
++
++  // 代理组
++  rows.push_back({u"代理 IP", base::UTF8ToUTF16(ip_address_), false});
++  if (!instance_region_.empty()) {
++    rows.push_back({u"区域", base::UTF8ToUTF16(instance_region_), false});
++  }
++  if (!instance_type_.empty()) {
++    rows.push_back({u"ISP", base::UTF8ToUTF16(instance_type_), false});
++  }
++
++  // 添加：除最后一行外都加 bottom separator
++  for (size_t i = 0; i < rows.size(); ++i) {
++    bool is_last = (i == rows.size() - 1);
++    contents->AddChildView(std::make_unique<CopyableFieldRow>(
++        rows[i].label, rows[i].value, !is_last));
++    // 账号组末尾后插入加粗分隔（高 8px 让视觉更明显的分组）
++    if (rows[i].is_group_end && !is_last) {
++      auto gap = std::make_unique<views::View>();
++      gap->SetPreferredSize(gfx::Size(0, 6));
++      contents->AddChildView(std::move(gap));
++    }
++  }
++
++  tooltip_widget_ = std::make_unique<views::Widget>();
++  tooltip_widget_->Init(std::move(params));
++  auto* contents_ptr =
++      tooltip_widget_->SetContentsView(std::move(contents));
++
++  // 计算 popup 位置：bar 正下方左对齐，留 6px gap
++  gfx::Size sz = contents_ptr->GetPreferredSize();
++  gfx::Rect bar_screen = GetBoundsInScreen();
++  gfx::Rect bounds(bar_screen.x(), bar_screen.bottom() + 6, sz.width(),
++                   sz.height());
++  tooltip_widget_->SetBounds(bounds);
++  tooltip_widget_->ShowInactive();
++}
++
++void MoCiEnvIndicatorView::HideTooltip() {
++  if (tooltip_widget_) {
++    tooltip_widget_->Close();
++    tooltip_widget_.reset();
++  }
++}
++
++void MoCiEnvIndicatorView::UpdateBackgroundFromTheme() {
++  // 不再 theme-bind，bg 走构造函数硬编码（吴总确认要 MoCi 自有蓝调）
++}
++
++void MoCiEnvIndicatorView::AddedToWidget() {
++  views::View::AddedToWidget();
++}
++
++void MoCiEnvIndicatorView::OnThemeChanged() {
++  views::View::OnThemeChanged();
++}
++
++void MoCiEnvIndicatorView::Layout(PassKey) {
++  if (!scroll_container_) {
++    return;
++  }
++  const int content_w = std::max(0, width() - kHorizontalPadding * 2);
++  const size_t n = rows_.size() + (rows_.size() > 1 ? 1 : 0);
++  const int total_h = kRowHeight * static_cast<int>(std::max<size_t>(n, 1));
++  scroll_container_->SetBounds(kHorizontalPadding, kVerticalPadding,
++                               content_w, total_h);
++}
++
++gfx::Size MoCiEnvIndicatorView::CalculatePreferredSize(
++    const views::SizeBounds& available_size) const {
++  if (!has_data_) {
++    return gfx::Size();
++  }
++  int w = measured_width_ > 0 ? measured_width_ : 220;
++  w = std::clamp(w, 160, 320);
++  return gfx::Size(w, kViewHeight);
++}
++
++BEGIN_METADATA(MoCiEnvIndicatorView)
++END_METADATA
